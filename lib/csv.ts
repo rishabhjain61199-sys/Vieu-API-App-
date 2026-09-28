@@ -40,7 +40,7 @@ const HEADER_MAP: Record<string, SearchParam> = {
 
 export type BatchInput = { label: string; inputs: Partial<Record<SearchParam, string>> };
 
-export const MAX_BATCH_ROWS = 250;
+export const MAX_BATCH_ROWS = 2000;
 
 /**
  * Turns an uploaded CSV or a pasted list into search inputs. With a recognised

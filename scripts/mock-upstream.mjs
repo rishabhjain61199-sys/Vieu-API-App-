@@ -47,18 +47,40 @@ const people = (slug, company) =>
     swimlane: i < 9 ? pods[0] : pods[(i % 4) + 1],
   }));
 
+// Synthetic companies for scale tests: coN.test (N = 1..5000), 20s seeds, 6 people each.
+const BULK_SEED_MS = Number(process.env.BULK_SEED_MS || 20_000);
+function ensureBulk(term) {
+  const m = term.match(/^co(\d{1,4})\.test$/);
+  if (!m) return null;
+  const slug = `co${m[1]}`;
+  if (!companies[slug]) {
+    const hex = m[1].padStart(12, "0");
+    companies[slug] = { companyId: `COMP-00000000-0000-0000-0000-${hex}`, name: `Company ${m[1]}`, accountId: Number(m[1]) % 3 ? `acc-${slug}` : null, verified: true, bulk: true };
+    state[slug] = { status: companies[slug].accountId ? "not_started" : "none", at: 0 };
+  }
+  return slug;
+}
+const stats = { maxPending: 0, perMinute: new Map(), maxPerMinute: 0 };
+function pendingNow() {
+  return Object.entries(state).filter(([slug, st]) => st.status === "pending" && companies[slug]?.bulk).length;
+}
+
 function view(slug) {
   const c = companies[slug];
   const s = state[slug];
   if (s.at === null) s.at = Date.now();
-  if (s.status === "pending" && Date.now() - s.at > SEED_MS) s.status = "completed";
+  if (s.status === "pending" && Date.now() - s.at > (c.bulk ? BULK_SEED_MS : SEED_MS)) s.status = "completed";
   const generated = s.status === "completed";
   return {
     accountId: c.accountId, companyId: c.companyId, generated,
     seedingStatus: s.status === "none" ? "not_started" : s.status,
     ...(generated ? {} : { message: "Power pods have not been generated for this account" }),
     // McDonald's has no one in Procurement, to exercise empty pods.
-    stakeholders: generated ? people(slug, c.name).filter((p) => !(slug === "mcdcorp" && p.swimlane === "Procurement")) : [],
+    stakeholders: !generated
+      ? []
+      : c.bulk
+        ? people(slug, c.name).slice(0, 6).map((p, i) => ({ ...p, seniority: i % 2 ? "VP" : "Director" }))
+        : people(slug, c.name).filter((p) => !(slug === "mcdcorp" && p.swimlane === "Procurement")),
   };
 }
 
@@ -79,8 +101,14 @@ let rateLimitOnce = true;
 http
   .createServer((req, res) => {
     const url = new URL(req.url, `http://localhost:${PORT}`);
+    if (url.pathname === "/__stats") {
+      return send(res, 200, { maxPendingSeeds: stats.maxPending, pendingNow: pendingNow(), maxRequestsPerMinute: stats.maxPerMinute });
+    }
+    const minute = Math.floor(Date.now() / 60_000);
+    stats.perMinute.set(minute, (stats.perMinute.get(minute) ?? 0) + 1);
+    stats.maxPerMinute = Math.max(stats.maxPerMinute, stats.perMinute.get(minute));
     const key = req.headers["x-api-key"];
-    console.log(req.method, url.pathname, url.search); // never logs the key
+    if (!url.search.includes("co")) console.log(req.method, url.pathname, url.search); // never logs the key
     if (!key) return send(res, 401, { message: "Missing token", reason: "TOKEN_MISSING" });
     if (key === "bad") return send(res, 401, { message: "Invalid Auth Token Provided", reason: "TOKEN_EXPIRED" });
     if (key === "noscope") return send(res, 403, { code: "ERR_FORBIDDEN", message: "Insufficient permissions", reason: "SCOPE_INSUFFICIENT" });
@@ -101,6 +129,11 @@ http
       if (term.includes("ratelimit") && rateLimitOnce) {
         rateLimitOnce = false;
         return send(res, 429, { message: "Too many requests" }, { "retry-after": "2" });
+      }
+      const bulk = ensureBulk(term);
+      if (bulk) {
+        const c = companies[bulk];
+        return send(res, 200, { companies: [{ ...c, linkedInUrl: null, imageUrl: null, hasAccountPlan: !!c.accountId }] });
       }
       const li = (q.get("linkedInUrl") || "").toLowerCase();
       const slugs = li
@@ -135,6 +168,7 @@ http
       let created = false;
       if (!c.accountId) { c.accountId = `acc-${slug}`; created = true; }
       if (["none", "not_started", "failed"].includes(state[slug].status)) state[slug] = { status: "pending", at: Date.now() };
+      stats.maxPending = Math.max(stats.maxPending, pendingNow());
       return send(res, 200, { accountId: c.accountId, companyId: c.companyId, status: "accepted", message: "Generation accepted", ...(created ? { created } : {}) });
     }
     send(res, 404, { message: "No route" });

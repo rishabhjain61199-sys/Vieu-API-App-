@@ -3,10 +3,10 @@
 import { useEffect, useMemo, useState } from "react";
 import { ArrowDown, ArrowUp, ChevronsUpDown, Download, ExternalLink, Search as SearchIcon, Tag } from "lucide-react";
 import { downloadFile, slugify, today, toCsv } from "@/lib/csv";
-import { HISTORY_EVENT, isSavingEnabled, listEntries, type HistoryEntry } from "@/lib/history";
-import { analyze, CSV_COLUMNS, type Stakeholder } from "@/lib/stakeholders";
+import { HISTORY_EVENT, listRecords } from "@/lib/history";
+import { analyze, csvHeader, extraFields, personCsvRow, type Stakeholder } from "@/lib/stakeholders";
 import { tenantKey } from "@/lib/tenant";
-import { rowToRecord, type Outcome, type RunRecord } from "@/lib/types";
+import type { Outcome, RunRecord } from "@/lib/types";
 import { LinkedInIcon } from "./ui";
 
 type Row = {
@@ -22,19 +22,16 @@ type Row = {
 type SortKey = "name" | "title" | "pod" | "company" | "location" | "flags";
 const PAGE = 300;
 
+type Saved = { record: RunRecord; tenant: string; at: number };
+
 /** Newest saved result per (tenant, company), from lookups and batch rows alike. */
-function latestRecords(entries: HistoryEntry[]) {
-  const best = new Map<string, { record: RunRecord; at: number; tenant: string }>();
-  for (const e of entries) {
-    const records =
-      e.kind === "lookup" ? [e.data] : e.data.rows.map(rowToRecord).filter((r): r is RunRecord => !!r);
-    for (const record of records) {
-      if (!record.stakeholders.length) continue;
-      const key = `${tenantKey(e.tenant)}|${record.company.companyId}`;
-      const at = record.checkedAt ?? e.updatedAt;
-      const cur = best.get(key);
-      if (!cur || at > cur.at) best.set(key, { record, at, tenant: e.tenant?.trim() ?? "" });
-    }
+function latestRecords(all: Saved[]) {
+  const best = new Map<string, Saved>();
+  for (const x of all) {
+    if (!x.record.stakeholders.length) continue;
+    const key = `${tenantKey(x.tenant)}|${x.record.company.companyId}`;
+    const cur = best.get(key);
+    if (!cur || x.at > cur.at) best.set(key, x);
   }
   return [...best.values()];
 }
@@ -42,7 +39,7 @@ function latestRecords(entries: HistoryEntry[]) {
 export type StakeholderFocus = { companyId: string; n: number } | null;
 
 export function Stakeholders({ currentTenant, focus }: { currentTenant?: string; focus: StakeholderFocus }) {
-  const [entries, setEntries] = useState<HistoryEntry[] | null>(null);
+  const [entries, setEntries] = useState<Saved[] | null>(null);
   const [tenant, setTenant] = useState<string>(() => tenantKey(currentTenant) || "all");
   const [company, setCompany] = useState<string>("all");
   const [pod, setPod] = useState<string>("all");
@@ -53,11 +50,27 @@ export function Stakeholders({ currentTenant, focus }: { currentTenant?: string;
   const [lastClicked, setLastClicked] = useState<string | null>(null);
   const [limit, setLimit] = useState(PAGE);
 
+  // Reload when History changes, at most every 5s (a running batch saves often).
   useEffect(() => {
-    const load = () => listEntries().then(setEntries);
+    let last = 0;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const load = () => {
+      last = Date.now();
+      listRecords().then(setEntries);
+    };
+    const onChange = () => {
+      if (timer) return;
+      timer = setTimeout(() => {
+        timer = null;
+        load();
+      }, Math.max(0, 5000 - (Date.now() - last)));
+    };
     load();
-    window.addEventListener(HISTORY_EVENT, load);
-    return () => window.removeEventListener(HISTORY_EVENT, load);
+    window.addEventListener(HISTORY_EVENT, onChange);
+    return () => {
+      window.removeEventListener(HISTORY_EVENT, onChange);
+      if (timer) clearTimeout(timer);
+    };
   }, []);
 
   // "View" on a batch row lands here filtered to that company.
@@ -153,14 +166,10 @@ export function Stakeholders({ currentTenant, focus }: { currentTenant?: string;
   }
 
   function exportRows(rows: Row[], tag: string) {
-    const lines: unknown[][] = [[...CSV_COLUMNS]];
-    for (const r of rows) {
-      const p = r.person;
-      lines.push([
-        r.company, r.companyId, r.accountId, r.outcome, p.pod, p.name, p.title, p.location, p.linkedInUrl, p.vieuUrl, p.personId,
-        p.flags.map((f) => `${f.label}${f.detail ? ` (${f.detail})` : ""}`).join("; "),
-      ]);
-    }
+    const extras = extraFields(rows.map((r) => r.person));
+    const lines: unknown[][] = [csvHeader(extras)];
+    for (const r of rows)
+      lines.push(personCsvRow(r.person, r.person.pod, { company: r.company, companyId: r.companyId, accountId: r.accountId, outcome: r.outcome }, extras));
     const scope = company !== "all" ? slugify(companies.find(([id]) => id === company)?.[1].name ?? "company") : "all_companies";
     downloadFile(`${scope}_stakeholders_${tag}_${today()}.csv`, toCsv(lines));
   }
@@ -176,7 +185,7 @@ export function Stakeholders({ currentTenant, focus }: { currentTenant?: string;
         <h2>No stakeholders yet</h2>
         <p className="muted">
           Stakeholders from every lookup and batch collect here, so you can browse and export them in one place.
-          {!isSavingEnabled() && " Saving is turned off in History, so new results won't appear here."}
+
         </p>
       </section>
     );

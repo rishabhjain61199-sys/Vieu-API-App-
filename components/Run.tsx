@@ -4,7 +4,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Clock, RefreshCw, TriangleAlert } from "lucide-react";
 import { ApiError, formatDuration, isAbort, sleep, vieu } from "@/lib/api";
 import { analyze, downloadStakeholderCsv } from "@/lib/stakeholders";
-import { newId, saveEntry } from "@/lib/history";
+import { deleteEntry, saveEntry } from "@/lib/history";
+import { tenantKey } from "@/lib/tenant";
 import { cleanDomain } from "@/lib/detect";
 import { useTenantPods } from "@/lib/pods";
 import { announce, primeAudio, setGenerating } from "@/lib/notify";
@@ -60,7 +61,9 @@ export function Run({
   const [busy, setBusy] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   const [lastChecked, setLastChecked] = useState<number | null>(null);
-  const entryId = useRef(resume?.entryId ?? newId());
+  // One History row per company (per tenant): looking it up again updates that row.
+  const lookupId = (t?: string) => resume?.entryId ?? `lookup:${tenantKey(t)}:${company.companyId}`;
+  const entryId = useRef(lookupId(tenant));
   const createdAt = useRef(resume?.createdAt ?? Date.now());
 
   const ids = useRef<Ids>({ accountId: company.accountId, companyId: company.companyId });
@@ -117,12 +120,17 @@ export function Run({
 
   async function watch() {
     const signal = ac.current.signal;
-    const windowStart = Date.now();
+    let windowStart = Date.now();
+    let lastWake = Date.now();
     setPhase("polling");
     setOutcome("seed_in_progress");
     try {
       while (true) {
         await sleep(POLL_MS, signal);
+        // Laptop slept: don't count the time asleep toward the 12-minute watch.
+        const late = Date.now() - lastWake - POLL_MS;
+        if (late > 60_000) windowStart += late;
+        lastWake = Date.now();
         try {
           if (settle(await fetchStakeholders(), true)) return;
         } catch (e) {
@@ -272,6 +280,12 @@ export function Run({
   // Save to history as soon as generation starts (so a closed tab can resume it) and on every final state.
   useEffect(() => {
     if (!["polling", "results", "timeout", "failed"].includes(phase)) return;
+    // If the tenant was identified after the first save, move the row to the tenant's id.
+    const id = lookupId(tenant);
+    if (id !== entryId.current) {
+      deleteEntry(entryId.current);
+      entryId.current = id;
+    }
     saveEntry({
       id: entryId.current,
       kind: "lookup",

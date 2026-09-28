@@ -5,16 +5,16 @@ import { ArrowDown, ArrowLeft, ArrowUp, BadgeCheck, ChevronsUpDown, Download, Fi
 import { ApiError, formatDuration, isAbort, vieu } from "@/lib/api";
 import { downloadFile, MAX_BATCH_ROWS, slugify, TEMPLATE_CSV, toBatchInputs, today, toCsv } from "@/lib/csv";
 import { PARAM_LABEL, SEARCH_PARAMS, type Detected } from "@/lib/detect";
-import { newId, saveEntry } from "@/lib/history";
+import { newId, saveBatch } from "@/lib/history";
+import { useWakeLock, wakeLockSupported } from "@/lib/wakelock";
 import { announce, primeAudio, setGenerating } from "@/lib/notify";
 import { pool } from "@/lib/pool";
-import { analyze, companyCore, CSV_COLUMNS, stakeholderCsvRows } from "@/lib/stakeholders";
+import { analyze, companyCore, csvHeader, extraFields, stakeholderCsvRows } from "@/lib/stakeholders";
 import {
   idParam,
   OUTCOME_LABEL,
   rowToRecord,
   STAGE_OUTCOME,
-  type BatchRecord,
   type BatchRow,
   type Company,
   type CompanyProfile,
@@ -27,11 +27,17 @@ import { OUTCOME_TONE, RecordView } from "./Summary";
 import { NotifyOptions } from "./NotifyOptions";
 import { MatchPicker, type CandidateDetails } from "./MatchPicker";
 
-const CONCURRENCY = 5;
+// Lookups/checks in flight; the shared limiter in lib/api keeps the tenant under its rate limit.
+const CONCURRENCY = 8;
+/** Seeds running in Vieu at once (the API docs set no limit; kept modest and adjustable). */
+export const DEFAULT_MAX_SEEDS = 20;
+const SAVE_EVERY_MS = 1500;
+const WAKE_GAP_MS = 60_000; // a tick this late means the laptop slept
 const POLL_MS = 15_000; // per account, never faster
 const TICK_MS = 5_000;
 const MAX_WAIT_MS = 12 * 60_000;
-const WATCHING = new Set(["polling", "timeout", "generating"]);
+const WATCHING = new Set(["polling", "timeout", "generating", "gen_queued"]);
+const PAGE_ROWS = 100;
 const BUSY = new Set(["queued", "resolving", "checking"]);
 const NOT_LISTED = "__not_listed__";
 
@@ -43,7 +49,7 @@ function blankRow(label: string, inputs: BatchRow["inputs"]): BatchRow {
   };
 }
 
-export type ResumeBatch = { id: string; createdAt: number; record: BatchRecord };
+export type ResumeBatch = { id: string; createdAt: number; name: string; rows: BatchRow[]; maxSeeds?: number };
 
 export function Batch({
   apiKey,
@@ -67,15 +73,23 @@ export function Batch({
   const [confirmTargets, setConfirmTargets] = useState<BatchRow[] | null>(null);
   const [dragging, setDragging] = useState(false);
   const [tickN, setTickN] = useState(0);
+  const [maxSeeds, setMaxSeeds] = useState(DEFAULT_MAX_SEEDS);
+  const [keepAwake, setKeepAwake] = useState(true);
   const rowsRef = useRef<BatchRow[]>([]);
   rowsRef.current = rows;
   const entry = useRef({ id: newId(), createdAt: Date.now() });
   const ac = useRef(new AbortController());
   const fileRef = useRef<HTMLInputElement>(null);
+  // Rows changed / removed since the last save (only these are written to History).
+  const dirty = useRef(new Set<string>());
+  const removed = useRef(new Set<string>());
+  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastTick = useRef(Date.now());
 
   const preview = useMemo(() => (text.trim() ? toBatchInputs(text, "paste") : null), [text]);
 
   function patch(id: string, p: Partial<BatchRow>) {
+    dirty.current.add(id);
     setRows((prev) => {
       const next = prev.map((r) => (r.id === id ? { ...r, ...p } : r));
       rowsRef.current = next;
@@ -159,10 +173,15 @@ export function Batch({
     patch(row.id, { stage: "no_match" });
   }
 
-  async function generate(targets: BatchRow[]) {
+  /** Queue rows for generation; the scheduler below starts them `maxSeeds` at a time. */
+  function generate(targets: BatchRow[]) {
     setConfirmTargets(null);
-    await pool(targets, CONCURRENCY, async (row) => {
-      patch(row.id, { stage: "generating", error: undefined });
+    for (const row of targets) patch(row.id, { stage: "gen_queued", error: undefined });
+  }
+
+  async function startSeed(row: BatchRow) {
+    patch(row.id, { stage: "generating", error: undefined });
+    {
       try {
         const g = await vieu<GenerateResponse>(
           apiKey, "POST", "/accounts/stakeholders/generate",
@@ -176,11 +195,31 @@ export function Batch({
       } catch (e) {
         handleError(e, row.id);
       }
-    });
+    }
   }
+
+  // Scheduler: keep up to `maxSeeds` seeds running (started here or found already pending).
+  useEffect(() => {
+    const running = rows.filter((r) => r.stage === "generating" || r.stage === "polling").length;
+    const slots = maxSeeds - running;
+    if (slots <= 0) return;
+    rows.filter((r) => r.stage === "gen_queued").slice(0, slots).forEach(startSeed);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rows, maxSeeds]);
 
   async function tick() {
     const now = Date.now();
+    // Woke from sleep (lid closed): time asleep doesn't count toward the 12-minute watch,
+    // and anything that timed out meanwhile is checked again right away.
+    const gap = now - lastTick.current;
+    lastTick.current = now;
+    if (gap > WAKE_GAP_MS) {
+      for (const r of rowsRef.current) {
+        if (r.stage === "polling") patch(r.id, { watchStart: (r.watchStart ?? now) + gap, checkedAt: 0 });
+        if (r.stage === "timeout") patch(r.id, { stage: "polling", watchStart: now, checkedAt: 0 });
+      }
+      return;
+    }
     const due = rowsRef.current.filter(
       (r) => r.stage === "polling" && now - Math.max(r.checkedAt ?? 0, r.watchStart ?? 0) >= POLL_MS,
     );
@@ -206,10 +245,12 @@ export function Batch({
   }
 
   const anyPolling = rows.some((r) => r.stage === "polling");
-  const busy = rows.some((r) => r.stage === "generating" || anyPolling);
+  const busy = rows.some((r) => r.stage === "generating" || r.stage === "gen_queued") || anyPolling;
+  useWakeLock(busy && keepAwake);
 
   useEffect(() => {
     if (!anyPolling) return;
+    lastTick.current = Math.max(lastTick.current, Date.now() - TICK_MS);
     const t = setTimeout(async () => {
       await tick();
       setTickN((n) => n + 1);
@@ -228,7 +269,7 @@ export function Batch({
   useEffect(() => () => ac.current.abort(), []);
 
   // Tab title while seeds run; one alert when the last watched seed in the batch ends.
-  const activeCount = rows.filter((r) => r.stage === "polling" || r.stage === "generating").length;
+  const activeCount = rows.filter((r) => r.stage === "polling" || r.stage === "generating" || r.stage === "gen_queued").length;
   const wasActive = useRef(false);
   useEffect(() => {
     setGenerating("batch", activeCount);
@@ -251,17 +292,38 @@ export function Batch({
 
   useEffect(() => () => setGenerating("batch", 0), []);
 
-  // Persist to history (debounced) whenever rows change.
+  // Save to History: at most every 1.5s, writing only the rows that changed. The batch is one
+  // History entry however many companies it has; each company is stored under it.
+  const latest = useRef({ name, tenant, maxSeeds });
+  latest.current = { name, tenant, maxSeeds };
+  function flush() {
+    saveTimer.current = null;
+    const all = rowsRef.current;
+    if (!all.length && !removed.current.size) return;
+    const index = new Map(all.map((r, i) => [r.id, i]));
+    const dirtyRows = [...dirty.current].flatMap((id) => (index.has(id) ? [{ row: all[index.get(id)!], i: index.get(id)! }] : []));
+    const gone = [...removed.current];
+    dirty.current.clear();
+    removed.current.clear();
+    saveBatch({
+      id: entry.current.id, createdAt: entry.current.createdAt, tenant: latest.current.tenant, name: latest.current.name,
+      rows: all, dirty: dirtyRows, removed: gone, maxSeeds: latest.current.maxSeeds,
+    });
+  }
   useEffect(() => {
-    if (!rows.length) return;
-    const t = setTimeout(() => {
-      saveEntry({
-        id: entry.current.id, kind: "batch", title: name, tenant, createdAt: entry.current.createdAt,
-        updatedAt: Date.now(), data: { name, rows },
-      });
-    }, 800);
-    return () => clearTimeout(t);
-  }, [rows, name, tenant]);
+    if (!rows.length && !removed.current.size) return;
+    if (!saveTimer.current) saveTimer.current = setTimeout(flush, SAVE_EVERY_MS);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rows, name, tenant, maxSeeds]);
+  // Write anything pending if this view goes away (key cleared, etc.).
+  useEffect(
+    () => () => {
+      if (saveTimer.current) clearTimeout(saveTimer.current);
+      if (dirty.current.size || removed.current.size) flush();
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  );
 
   // Resume a batch opened from History: re-check anything that wasn't final.
   useEffect(() => {
@@ -269,11 +331,15 @@ export function Batch({
     ac.current.abort();
     ac.current = new AbortController();
     entry.current = { id: resume.id, createdAt: resume.createdAt };
-    setName(resume.record.name);
-    const restored = resume.record.rows.map((r) => ({ ...r }));
+    dirty.current.clear();
+    removed.current.clear();
+    setName(resume.name);
+    if (resume.maxSeeds) setMaxSeeds(resume.maxSeeds);
+    const restored = resume.rows.map((r) => ({ ...r }));
     setRows(restored);
     rowsRef.current = restored;
-    const stale = restored.filter((r) => !["seeded", "completed", "no_match"].includes(r.stage));
+    // Queued rows stay queued (the scheduler picks them up); anything else unfinished is re-checked.
+    const stale = restored.filter((r) => !["seeded", "completed", "no_match", "gen_queued"].includes(r.stage));
     pool(stale, CONCURRENCY, (r) => (r.company ? checkRow(r) : resolveRow(r)));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [resume]);
@@ -319,10 +385,13 @@ export function Batch({
       setImportError("No companies found. Use one per line, or a CSV with a name, domain or LinkedIn column.");
       return;
     }
+    if (dirty.current.size || removed.current.size) flush();
     ac.current.abort();
     ac.current = new AbortController();
     entry.current = { id: newId(), createdAt: Date.now() };
     const fresh = items.map((it) => blankRow(it.label, it.inputs));
+    dirty.current = new Set(fresh.map((r) => r.id));
+    removed.current.clear();
     setRows(fresh);
     rowsRef.current = fresh;
     setName(`${label} (${fresh.length} ${fresh.length === 1 ? "company" : "companies"})`);
@@ -333,11 +402,23 @@ export function Batch({
 
   async function onFile(f: File | undefined) {
     if (!f) return;
-    if (f.size > 2_000_000) return setImportError("That file is over 2 MB. Split it into smaller batches.");
+    if (f.size > 5_000_000) return setImportError("That file is over 5 MB. Split it into smaller batches.");
     start(await f.text(), f.name.replace(/\.(csv|tsv|txt)$/i, ""));
   }
 
+  function removeRows(ids: string[]) {
+    const drop = new Set(ids);
+    for (const id of ids) removed.current.add(id);
+    setRows((prev) => {
+      const out = prev.filter((x) => !drop.has(x.id));
+      rowsRef.current = out;
+      return out;
+    });
+  }
+
   function reset() {
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    if (dirty.current.size || removed.current.size) flush();
     ac.current.abort();
     ac.current = new AbortController();
     setRows([]);
@@ -423,12 +504,11 @@ export function Batch({
           needsReview,
           onGenerate: (only) => setConfirmTargets(only ?? eligible),
           onConfirmMany: (ids) => ids.forEach((id) => patch(id, { ambiguous: false, manual: true })),
-          onRemoveMany: (ids) =>
-            setRows((prev) => {
-              const out = prev.filter((x) => !ids.includes(x.id));
-              rowsRef.current = out;
-              return out;
-            }),
+          onRemoveMany: removeRows,
+          maxSeeds,
+          onStopQueue: () => rows.filter((r) => r.stage === "gen_queued").forEach((r) => patch(r.id, { stage: "not_started" })),
+          keepAwake,
+          onKeepAwake: setKeepAwake,
           onCheckAgain: () =>
             rows.filter((r) => r.stage === "timeout").forEach((r) => patch(r.id, { stage: "polling", watchStart: Date.now(), checkedAt: 0 })),
           onRetry: (r) => (r.company ? checkRow(r) : resolveRow(r)),
@@ -459,12 +539,7 @@ export function Batch({
             patch(r.id, next);
             checkRow(next);
           },
-          onRemove: (r) =>
-            setRows((prev) => {
-              const out = prev.filter((x) => x.id !== r.id);
-              rowsRef.current = out;
-              return out;
-            }),
+          onRemove: (r) => removeRows([r.id]),
           onReset: reset,
         }}
       />
@@ -487,7 +562,25 @@ export function Batch({
         {needsReview > 0 && targets === eligible && (
           <p className="warn-text">{needsReview} rows with an uncertain match are skipped until you confirm them.</p>
         )}
-        <p className="muted small">Each usually takes under 10 minutes. They run in parallel and you can watch them here.</p>
+        {targets.length > 1 ? (
+          <label className="seeds-input">
+            Run
+            <input
+              type="number"
+              min={1}
+              max={50}
+              value={maxSeeds}
+              onChange={(e) => setMaxSeeds(Math.max(1, Math.min(50, Number(e.target.value) || 1)))}
+              aria-label="Seeds at a time"
+            />
+            at a time. The rest wait in a queue and start as each one finishes.
+          </label>
+        ) : null}
+        <p className="muted small">
+          Each usually takes under 10 minutes
+          {targets.length > maxSeeds && <>, so this is roughly {formatDuration(Math.ceil(targets.length / maxSeeds) * 8 * 60_000)} in total</>}. Keep this tab
+          open and the laptop awake. If it sleeps, the queue pauses and picks up on wake, and History always keeps the results.
+        </p>
         <NotifyOptions />
       </ConfirmDialog>
     </>
@@ -514,6 +607,7 @@ const STAGE_BADGE: Record<BatchRow["stage"], { label: string; tone: string }> = 
   timeout: { label: OUTCOME_LABEL.still_generating, tone: OUTCOME_TONE.still_generating },
   failed: { label: OUTCOME_LABEL.failed, tone: OUTCOME_TONE.failed },
   not_started: { label: OUTCOME_LABEL.not_generated, tone: OUTCOME_TONE.not_generated },
+  gen_queued: { label: "Queued to generate", tone: "neutral" },
 };
 
 type FilterKey = "all" | "review" | "not_generated" | "generating" | "has_people" | "failed" | "no_match";
@@ -522,7 +616,7 @@ const FILTERS: Record<FilterKey, { label: string; test: (r: BatchRow) => boolean
   all: { label: "All", test: () => true },
   review: { label: "Needs review", test: (r) => r.ambiguous },
   not_generated: { label: "Not generated", test: (r) => r.stage === "not_started" },
-  generating: { label: "Generating", test: (r) => ["generating", "polling", "timeout"].includes(r.stage) },
+  generating: { label: "Generating", test: (r) => ["gen_queued", "generating", "polling", "timeout"].includes(r.stage) },
   has_people: { label: "Has stakeholders", test: (r) => r.stakeholders.length > 0 },
   failed: { label: "Failed", test: (r) => r.stage === "failed" || r.stage === "error" },
   no_match: { label: "No match", test: (r) => r.stage === "no_match" },
@@ -531,7 +625,7 @@ const FILTERS: Record<FilterKey, { label: string; test: (r: BatchRow) => boolean
 type SortKey = "input" | "company" | "account" | "status" | "people";
 
 const STATUS_ORDER: Record<BatchRow["stage"], number> = {
-  no_match: 0, error: 1, failed: 2, not_started: 3, queued: 4, resolving: 4, checking: 4,
+  no_match: 0, error: 1, failed: 2, not_started: 3, queued: 4, resolving: 4, checking: 4, gen_queued: 5,
   generating: 5, polling: 5, timeout: 6, completed: 7, seeded: 8,
 };
 
@@ -586,6 +680,10 @@ function SortTh({
 
 type LiveActions = {
   eligible: number;
+  maxSeeds: number;
+  onStopQueue: () => void;
+  keepAwake: boolean;
+  onKeepAwake: (on: boolean) => void;
   needsReview: number;
   /** Open the generate confirmation for these rows (default: every eligible row). */
   onGenerate: (only?: BatchRow[]) => void;
@@ -621,6 +719,7 @@ export function BatchView({
 }) {
   const [detailId, setDetailId] = useState<string | null>(null);
   const [pickerId, setPickerId] = useState<string | null>(null);
+  const [page, setPage] = useState(0);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [lastClicked, setLastClicked] = useState<string | null>(null);
   const [filter, setFilter] = useState<FilterKey>("all");
@@ -632,6 +731,9 @@ export function BatchView({
 
   function openPicker(id: string | null) {
     setPickerId(id);
+    // Jump to the page holding the row.
+    const idx = id ? visible.findIndex((r) => r.id === id) : -1;
+    if (idx >= 0) setPage(Math.floor(idx / PAGE_ROWS));
     if (id) requestAnimationFrame(() => document.getElementById(`row-${id}`)?.scrollIntoView({ behavior: "smooth", block: "center" }));
   }
   /** After a pick: in review mode move to the next uncertain row, else close. */
@@ -648,6 +750,9 @@ export function BatchView({
   }
   const [now, setNow] = useState(() => Date.now());
   const polling = rows.filter((r) => r.stage === "polling" || r.stage === "generating");
+  const queuedCount = rows.filter((r) => r.stage === "gen_queued").length;
+  const doneGen = rows.filter((r) => r.stage === "completed");
+  const avgGenMs = doneGen.length ? doneGen.reduce((n, r) => n + ((r.genEnd ?? 0) - (r.genStart ?? 0)), 0) / doneGen.length : 8 * 60_000;
   const working = rows.filter((r) => ["queued", "resolving", "checking"].includes(r.stage)).length;
 
   useEffect(() => {
@@ -668,6 +773,13 @@ export function BatchView({
   const createdCount = rows.filter((r) => r.created).length;
   const timeouts = rows.filter((r) => r.stage === "timeout").length;
 
+  // A filter that has emptied out (e.g. all "Needs review" rows confirmed) falls back to All.
+  const activeFilter: FilterKey = filter !== "all" && !rows.some(FILTERS[filter].test) ? "all" : filter;
+  const visible = sortRows(rows.filter(FILTERS[activeFilter].test), sort);
+  const pageCount = Math.max(1, Math.ceil(visible.length / PAGE_ROWS));
+  const curPage = Math.min(page, pageCount - 1);
+  const pageRows = visible.slice(curPage * PAGE_ROWS, (curPage + 1) * PAGE_ROWS);
+
   const detail = rows.find((r) => r.id === detailId);
   const detailRecord = detail ? rowToRecord(detail) : null;
   if (detail && detailRecord) {
@@ -681,24 +793,21 @@ export function BatchView({
     );
   }
 
-  // A filter that has emptied out (e.g. all "Needs review" rows confirmed) falls back to All.
-  const activeFilter: FilterKey = filter !== "all" && !rows.some(FILTERS[filter].test) ? "all" : filter;
-  const visible = sortRows(rows.filter(FILTERS[activeFilter].test), sort);
   const selectedRows = rows.filter((r) => selected.has(r.id));
   const selConfirmable = selectedRows.filter((r) => r.ambiguous && canEditRow(r));
   const selGeneratable = selectedRows.filter((r) => r.company && !r.ambiguous && (r.stage === "not_started" || r.stage === "failed"));
   const selRemovable = selectedRows.filter(canEditRow);
-  const allVisibleSelected = visible.length > 0 && visible.every((r) => selected.has(r.id));
-  const someVisibleSelected = visible.some((r) => selected.has(r.id));
+  const allVisibleSelected = pageRows.length > 0 && pageRows.every((r) => selected.has(r.id));
+  const someVisibleSelected = pageRows.some((r) => selected.has(r.id));
 
   /** Checkbox click; shift-click selects the range from the last clicked row, like a spreadsheet. */
   function toggleRow(id: string, shift: boolean) {
     const next = new Set(selected);
     const on = !next.has(id);
     if (shift && lastClicked) {
-      const a = visible.findIndex((r) => r.id === lastClicked);
-      const b = visible.findIndex((r) => r.id === id);
-      if (a >= 0 && b >= 0) for (const r of visible.slice(Math.min(a, b), Math.max(a, b) + 1)) on ? next.add(r.id) : next.delete(r.id);
+      const a = pageRows.findIndex((r) => r.id === lastClicked);
+      const b = pageRows.findIndex((r) => r.id === id);
+      if (a >= 0 && b >= 0) for (const r of pageRows.slice(Math.min(a, b), Math.max(a, b) + 1)) on ? next.add(r.id) : next.delete(r.id);
     } else on ? next.add(id) : next.delete(id);
     setSelected(next);
     setLastClicked(id);
@@ -706,8 +815,8 @@ export function BatchView({
 
   function toggleAllVisible() {
     const next = new Set(selected);
-    if (allVisibleSelected) visible.forEach((r) => next.delete(r.id));
-    else visible.forEach((r) => next.add(r.id));
+    if (allVisibleSelected) pageRows.forEach((r) => next.delete(r.id));
+    else pageRows.forEach((r) => next.add(r.id));
     setSelected(next);
   }
 
@@ -715,16 +824,19 @@ export function BatchView({
 
   function sortBy(key: SortKey) {
     setSort((cur) => (cur?.key === key ? (cur.dir === 1 ? { key, dir: -1 } : null) : { key, dir: 1 }));
+    setPage(0);
   }
 
   function exportAll(subset: BatchRow[] = rows) {
-    const lines: unknown[][] = [[...CSV_COLUMNS]];
-    for (const r of subset) {
+    const parts = subset.flatMap((r) => {
       const rec = rowToRecord(r);
-      if (!rec || !rec.stakeholders.length) continue;
+      if (!rec || !rec.stakeholders.length) return [];
       const { pods } = analyze(rec.stakeholders, { name: rec.company.name, domain: rec.domain });
-      lines.push(...stakeholderCsvRows(pods, { company: rec.company.name, companyId: rec.company.companyId, accountId: rec.accountId ?? "", outcome: rec.outcome }));
-    }
+      return [{ pods, meta: { company: rec.company.name, companyId: rec.company.companyId, accountId: rec.accountId ?? "", outcome: rec.outcome } }];
+    });
+    const extras = extraFields(parts.flatMap((x) => x.pods.flatMap((p) => p.people)));
+    const lines: unknown[][] = [csvHeader(extras)];
+    for (const x of parts) lines.push(...stakeholderCsvRows(x.pods, x.meta, extras));
     const tag = subset === rows ? "" : `_${subset.length}_selected`;
     downloadFile(`batch_${slugify(name)}${tag}_stakeholders_${today()}.csv`, toCsv(lines));
   }
@@ -796,12 +908,32 @@ export function BatchView({
           {outcomes.unresolved ? <Badge tone="bad">Unresolved {outcomes.unresolved}</Badge> : null}
         </div>
 
-        {polling.length > 0 && (
-          <p className="note">
-            Generating for {polling.length} {polling.length === 1 ? "company" : "companies"}. Each is checked every 15s for up to 12 minutes. You can leave this tab open. Refreshing it clears your key, but you can resume from History.
+        {(polling.length > 0 || queuedCount > 0) && (
+          <p className="note progress-note">
+            <strong>
+              {polling.length} generating{queuedCount > 0 && <> · {queuedCount.toLocaleString()} queued</>}
+              {doneGen.length > 0 && <> · {doneGen.length.toLocaleString()} done</>}
+            </strong>
+            {live && <> · {live.maxSeeds} at a time</>}
+            {queuedCount > 0 && live && <> · about {formatDuration(Math.ceil((queuedCount + polling.length) / live.maxSeeds) * avgGenMs)} left</>}
+            . Each is checked every 15s. Keep this tab open and the laptop awake: if it sleeps, the queue pauses and resumes on wake. Everything is saved to History as it finishes.
           </p>
         )}
-        {polling.length > 0 && <NotifyOptions compact />}
+        {(polling.length > 0 || queuedCount > 0) && (
+          <div className="row gap wrap">
+            <NotifyOptions compact />
+            {live && wakeLockSupported() && (
+              <label className="toggle">
+                <input type="checkbox" checked={live.keepAwake} onChange={(e) => live.onKeepAwake(e.target.checked)} /> Keep screen awake
+              </label>
+            )}
+            {live && queuedCount > 0 && (
+              <button className="link-btn small danger" onClick={live.onStopQueue}>
+                Stop queue ({queuedCount.toLocaleString()} not started)
+              </button>
+            )}
+          </div>
+        )}
         {notice && <p className="warn-text">{notice}</p>}
 
         <div className="row gap wrap">
@@ -832,6 +964,7 @@ export function BatchView({
               className="btn btn-ghost small"
               onClick={() => {
                 setFilter("review");
+                setPage(0);
                 setSelected(new Set(reviewable.map((r) => r.id)));
               }}
             >
@@ -857,7 +990,7 @@ export function BatchView({
               const n = k === "all" ? rows.length : rows.filter(FILTERS[k].test).length;
               if (k !== "all" && !n) return null;
               return (
-                <button key={k} className={`chip ${activeFilter === k ? "chip-active" : ""}`} aria-pressed={activeFilter === k} onClick={() => setFilter(k)}>
+                <button key={k} className={`chip ${activeFilter === k ? "chip-active" : ""}`} aria-pressed={activeFilter === k} onClick={() => (setFilter(k), setPage(0))}>
                   {FILTERS[k].label} <strong>{n}</strong>
                 </button>
               );
@@ -892,6 +1025,11 @@ export function BatchView({
                 }}
               >
                 Remove {selRemovable.length}
+              </button>
+            )}
+            {allVisibleSelected && visible.length > pageRows.length && selected.size < visible.length && (
+              <button className="link-btn small" onClick={() => setSelected(new Set([...selected, ...visible.map((r) => r.id)]))}>
+                Select all {visible.length.toLocaleString()} rows
               </button>
             )}
             <span className="grow" />
@@ -932,7 +1070,7 @@ export function BatchView({
                   </td>
                 </tr>
               )}
-              {visible.map((r) => {
+              {pageRows.map((r) => {
                 const badge = STAGE_BADGE[r.stage];
                 const canView = r.stakeholders.length > 0;
                 const canEdit = canEditRow(r);
@@ -1074,6 +1212,20 @@ export function BatchView({
             </tbody>
           </table>
         </div>
+        {pageCount > 1 && (
+          <div className="pager">
+            <button className="btn btn-ghost small" disabled={curPage === 0} onClick={() => setPage(curPage - 1)}>
+              Previous
+            </button>
+            <span className="muted small">
+              {(curPage * PAGE_ROWS + 1).toLocaleString()}–{Math.min((curPage + 1) * PAGE_ROWS, visible.length).toLocaleString()} of{" "}
+              {visible.length.toLocaleString()}
+            </span>
+            <button className="btn btn-ghost small" disabled={curPage >= pageCount - 1} onClick={() => setPage(curPage + 1)}>
+              Next
+            </button>
+          </div>
+        )}
       </section>
     </>
   );

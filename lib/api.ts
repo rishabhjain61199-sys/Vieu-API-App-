@@ -35,6 +35,25 @@ export function sleep(ms: number, signal?: AbortSignal) {
 
 export const isAbort = (e: unknown) => (e as Error)?.name === "AbortError";
 
+/**
+ * One shared pace for every call this tab makes. The tenant limit is 3,000/min
+ * across all its keys; we stay at half of that so other tools (and a second tab)
+ * keep headroom. A 429 pauses everyone until Retry-After passes.
+ */
+const MIN_GAP_MS = 40; // 25 requests/second = 1,500/minute
+let nextSlot = 0;
+
+async function takeSlot(signal?: AbortSignal) {
+  const now = Date.now();
+  const at = Math.max(now, nextSlot);
+  nextSlot = at + MIN_GAP_MS;
+  if (at > now) await sleep(at - now, signal);
+}
+
+function pauseAll(ms: number) {
+  nextSlot = Math.max(nextSlot, Date.now() + ms);
+}
+
 export type CallOptions = {
   signal?: AbortSignal;
   /** Called before each 429 back-off with the wait in ms. */
@@ -53,6 +72,7 @@ export async function vieu<T>(
 ): Promise<T> {
   const qs = new URLSearchParams(params).toString();
   for (let attempt = 0; ; attempt++) {
+    await takeSlot(opts.signal);
     let res: Response;
     try {
       res = await fetch(`/api${path}?${qs}`, {
@@ -70,6 +90,7 @@ export async function vieu<T>(
       const retryAfter = Number(res.headers.get("retry-after"));
       const base = Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : 2000 * 2 ** attempt;
       const wait = Math.min(60_000, base) + Math.random() * 500;
+      pauseAll(wait);
       opts.onRateLimit?.(wait);
       await sleep(wait, opts.signal);
       continue;

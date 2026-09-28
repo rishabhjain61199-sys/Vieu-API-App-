@@ -100,6 +100,7 @@ export type RowStage =
   | "checking"
   | "seeded"
   | "not_started"
+  | "gen_queued"
   | "generating"
   | "polling"
   | "timeout"
@@ -142,6 +143,7 @@ export const STAGE_OUTCOME: Partial<Record<RowStage, Outcome>> = {
   timeout: "still_generating",
   failed: "failed",
   not_started: "not_generated",
+  gen_queued: "not_generated",
 };
 
 export function rowToRecord(row: BatchRow): RunRecord | null {

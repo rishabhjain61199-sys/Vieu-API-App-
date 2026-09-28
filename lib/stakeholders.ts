@@ -14,6 +14,8 @@ export type Stakeholder = {
   company: string;
   pod: string;
   flags: Flag[];
+  /** Exactly what Vieu returned for this person (every field is kept and exported). */
+  raw: Record<string, unknown>;
 };
 
 export type Pod = { name: string; people: Stakeholder[]; flagged: number };
@@ -40,6 +42,7 @@ function normalize(raw: Record<string, unknown>, i: number): Stakeholder {
     company: str(raw.company ?? raw.companyName),
     pod: str(raw.swimlane ?? raw.powerPod ?? raw.pod) || "Unassigned",
     flags: [],
+    raw,
   };
 }
 
@@ -149,18 +152,41 @@ export const CSV_COLUMNS = [
 
 export type CsvMeta = { company: string; companyId: string; accountId: string; outcome: Outcome };
 
-/** Stakeholder rows (no header) in CSV_COLUMNS order. */
-export function stakeholderCsvRows(pods: Pod[], meta: CsvMeta): string[][] {
-  return pods.flatMap((pod) =>
-    pod.people.map((p) => [
-      meta.company, meta.companyId, meta.accountId, meta.outcome, pod.name, p.name, p.title,
-      p.location, p.linkedInUrl, p.vieuUrl, p.personId,
-      p.flags.map((f) => `${f.label}${f.detail ? ` (${f.detail})` : ""}`).join("; "),
-    ]),
-  );
+// Fields already covered by CSV_COLUMNS (including the aliases normalize() reads).
+const COVERED = new Set([
+  "personId", "id", "company", "companyName", "name", "firstName", "lastName", "title", "jobTitle",
+  "linkedInUrl", "linkedinUrl", "vieuUrl", "vieuLink", "location", "swimlane", "powerPod", "pod",
+]);
+
+/** Any other fields Vieu returned, so exports carry everything. */
+export function extraFields(people: Stakeholder[]): string[] {
+  const keys = new Set<string>();
+  for (const p of people) for (const k of Object.keys(p.raw)) if (!COVERED.has(k)) keys.add(k);
+  return [...keys].sort();
+}
+
+const cellValue = (v: unknown) => (v == null ? "" : typeof v === "object" ? JSON.stringify(v) : String(v));
+
+export function csvHeader(extras: string[]) {
+  return [...CSV_COLUMNS, ...extras];
+}
+
+export function personCsvRow(p: Stakeholder, pod: string, meta: CsvMeta, extras: string[]): string[] {
+  return [
+    meta.company, meta.companyId, meta.accountId, meta.outcome, pod, p.name, p.title,
+    p.location, p.linkedInUrl, p.vieuUrl, p.personId,
+    p.flags.map((f) => `${f.label}${f.detail ? ` (${f.detail})` : ""}`).join("; "),
+    ...extras.map((k) => cellValue(p.raw[k])),
+  ];
+}
+
+/** Stakeholder rows (no header) in csvHeader(extras) order. */
+export function stakeholderCsvRows(pods: Pod[], meta: CsvMeta, extras: string[] = []): string[][] {
+  return pods.flatMap((pod) => pod.people.map((p) => personCsvRow(p, pod.name, meta, extras)));
 }
 
 export function downloadStakeholderCsv(pods: Pod[], meta: CsvMeta) {
-  const text = toCsv([[...CSV_COLUMNS], ...stakeholderCsvRows(pods, meta)]);
+  const extras = extraFields(pods.flatMap((p) => p.people));
+  const text = toCsv([csvHeader(extras), ...stakeholderCsvRows(pods, meta, extras)]);
   downloadFile(`${slugify(meta.company)}_stakeholders_${meta.outcome}_${today()}.csv`, text);
 }

@@ -1,17 +1,23 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { ArrowLeft, RefreshCw, Tag, Trash2 } from "lucide-react";
+import { ArrowLeft, DatabaseBackup, Download, RefreshCw, ShieldCheck, Tag, Trash2 } from "lucide-react";
 import {
   clearEntries,
   deleteEntry,
+  exportBackup,
   HISTORY_EVENT,
-  isSavingEnabled,
+  importBackup,
   listEntries,
-  setSavingEnabled,
+  loadBatchRows,
+  requestPersistence,
+  storageInfo,
+  type BatchSummary,
   type HistoryEntry,
 } from "@/lib/history";
-import { OUTCOME_LABEL, STAGE_OUTCOME, type Company, type LookupResume, type Outcome } from "@/lib/types";
+import { downloadFile, today } from "@/lib/csv";
+import { OUTCOME_LABEL, type BatchRow, type Company, type LookupResume, type Outcome } from "@/lib/types";
+import { Spinner } from "./ui";
 import { tenantKey } from "@/lib/tenant";
 import { Badge, CompanyLogo, ConfirmDialog } from "./ui";
 import { OUTCOME_TONE, RecordView } from "./Summary";
@@ -42,17 +48,21 @@ export function History({
   onRerunLookup: (c: Company, domain?: string, resume?: LookupResume) => void;
 }) {
   const [entries, setEntries] = useState<HistoryEntry[] | null>(null);
-  const [saving, setSaving] = useState(true);
   const [openId, setOpenId] = useState<string | null>(null);
+  const [openRows, setOpenRows] = useState<BatchRow[] | null>(null);
+  const [storage, setStorage] = useState<{ usedMB: number | null; persisted: boolean | null } | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState<HistoryEntry | null>(null);
+  const [backupMsg, setBackupMsg] = useState<string | null>(null);
   const [confirmClear, setConfirmClear] = useState(false);
   const [filter, setFilter] = useState<string>("all");
   const [pending, setPending] = useState<{ entry: HistoryEntry; run: () => void } | null>(null);
 
   useEffect(() => {
     const load = () => {
-      setSaving(isSavingEnabled());
       listEntries().then(setEntries);
+      storageInfo().then(setStorage);
     };
+    requestPersistence().then(() => storageInfo().then(setStorage));
     load();
     window.addEventListener(HISTORY_EVENT, load);
     return () => window.removeEventListener(HISTORY_EVENT, load);
@@ -80,6 +90,32 @@ export function History({
   }
 
   const open = entries?.find((e) => e.id === openId);
+
+  // A batch's companies are stored separately; load them when it's opened.
+  useEffect(() => {
+    setOpenRows(null);
+    if (open?.kind !== "batch") return;
+    let live = true;
+    loadBatchRows(open.id).then((r) => live && setOpenRows(r));
+    return () => {
+      live = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openId, open?.updatedAt]);
+
+  async function downloadBackup() {
+    downloadFile(`stakeholder_lookup_backup_${today()}.json`, await exportBackup(), "application/json");
+  }
+
+  async function restore(file?: File) {
+    if (!file) return;
+    try {
+      const r = await importBackup(await file.text());
+      setBackupMsg(`Restored: ${r.added} added, ${r.updated} updated, ${r.skipped} already up to date.`);
+    } catch (e) {
+      setBackupMsg((e as Error).message || "Couldn't read that backup file.");
+    }
+  }
   const needKey = hasKey ? undefined : "Paste your key first";
 
   if (open) {
@@ -122,21 +158,33 @@ export function History({
             }
           />
         ) : (
-          <BatchView
-            name={open.data.name}
-            rows={open.data.rows}
-            onView={onViewStakeholders}
-            extraActions={
-              <button
-                className="btn btn-ghost small"
-                disabled={!hasKey}
-                title={needKey}
-                onClick={() => guarded(open, () => onResumeBatch({ id: open.id, createdAt: open.createdAt, record: open.data }))}
-              >
-                <RefreshCw size={14} /> Resume and re-check
-              </button>
-            }
-          />
+          openRows === null ? (
+            <section className="card">
+              <p className="muted">
+                <Spinner /> Loading {open.data.total.toLocaleString()} companies…
+              </p>
+            </section>
+          ) : (
+            <BatchView
+              name={open.data.name}
+              rows={openRows}
+              onView={onViewStakeholders}
+              extraActions={
+                <button
+                  className="btn btn-ghost small"
+                  disabled={!hasKey}
+                  title={needKey}
+                  onClick={() =>
+                    guarded(open, () =>
+                      onResumeBatch({ id: open.id, createdAt: open.createdAt, name: open.data.name, rows: openRows, maxSeeds: open.data.maxSeeds }),
+                    )
+                  }
+                >
+                  <RefreshCw size={14} /> Resume and re-check
+                </button>
+              }
+            />
+          )
         )}
         <MismatchDialog pending={pending} currentTenant={currentTenant} onClose={() => setPending(null)} />
       </div>
@@ -149,18 +197,27 @@ export function History({
         <div className="grow">
           <p className="eyebrow">History</p>
           <h2>Previous lookups and batches</h2>
-          <p className="muted small">Saved in this browser only. Your API key is never saved.</p>
+          <p className="muted small">
+            Every lookup and batch is saved here automatically, in this browser. Your API key is never saved.
+            {storage?.persisted && (
+              <>
+                {" "}
+                <ShieldCheck size={13} className="ok-icon" /> Protected from automatic cleanup
+              </>
+            )}
+            {storage?.usedMB != null && <> · {storage.usedMB < 1 ? "<1" : Math.round(storage.usedMB)} MB used</>}
+          </p>
+          {storage?.persisted === false && (
+            <p className="hint">The browser may clear this if disk space runs low. Download a backup now and then to be safe.</p>
+          )}
+          {backupMsg && <p className="hint">{backupMsg}</p>}
         </div>
-        <label className="toggle">
-          <input
-            type="checkbox"
-            checked={saving}
-            onChange={(e) => {
-              setSavingEnabled(e.target.checked);
-              setSaving(e.target.checked);
-            }}
-          />
-          Save new runs
+        <button className="btn btn-ghost small" onClick={downloadBackup} disabled={!entries?.length}>
+          <Download size={14} /> Download backup
+        </button>
+        <label className="btn btn-ghost small">
+          <DatabaseBackup size={14} /> Restore backup
+          <input type="file" accept="application/json,.json" hidden onChange={(e) => restore(e.target.files?.[0])} />
         </label>
         {!!entries?.length && (
           <button className="btn btn-ghost small" onClick={() => setConfirmClear(true)}>
@@ -190,7 +247,7 @@ export function History({
                   <CompanyLogo src={e.data.company.imageUrl} name={e.data.company.name} size={36} />
                 ) : (
                   <span className="logo batch-logo" style={{ width: 36, height: 36 }}>
-                    {e.data.rows.length}
+                    {e.data.total >= 1000 ? `${Math.round(e.data.total / 100) / 10}k` : e.data.total}
                   </span>
                 )}
                 <span className="grow history-main">
@@ -208,19 +265,37 @@ export function History({
                         <span className="muted small">{e.data.stakeholders.length} stakeholders</span>
                       </>
                     ) : (
-                      <BatchChips rows={e.data.rows} />
+                      <BatchChips summary={e.data} />
                     )}
                   </span>
                 </span>
                 <span className="muted small nowrap">{ago(e.updatedAt)}</span>
               </button>
-              <button className="icon-btn" aria-label={`Delete ${e.title}`} onClick={() => deleteEntry(e.id)}>
+              <button className="icon-btn" aria-label={`Delete ${e.title}`} onClick={() => setConfirmDelete(e)}>
                 <Trash2 size={16} />
               </button>
             </li>
           ))}
         </ul>
       )}
+
+      <ConfirmDialog
+        open={!!confirmDelete}
+        title={`Delete "${confirmDelete?.title ?? ""}" from History?`}
+        confirmLabel="Delete"
+        onConfirm={() => {
+          if (confirmDelete) deleteEntry(confirmDelete.id);
+          setConfirmDelete(null);
+        }}
+        onCancel={() => setConfirmDelete(null)}
+      >
+        <p>
+          {confirmDelete?.kind === "batch"
+            ? `This removes the saved results for all ${confirmDelete.data.total.toLocaleString()} companies in this batch from this browser.`
+            : "This removes the saved result from this browser."}{" "}
+          Nothing in Vieu is affected, and running it again brings it back.
+        </p>
+      </ConfirmDialog>
 
       <ConfirmDialog
         open={confirmClear}
@@ -271,20 +346,17 @@ function MismatchDialog({
   );
 }
 
-function BatchChips({ rows }: { rows: { stage: keyof typeof STAGE_OUTCOME | string; stakeholders: unknown[] }[] }) {
-  const counts: Partial<Record<Outcome, number>> = {};
-  for (const r of rows) {
-    const o = STAGE_OUTCOME[r.stage as keyof typeof STAGE_OUTCOME];
-    if (o) counts[o] = (counts[o] ?? 0) + 1;
-  }
+function BatchChips({ summary }: { summary: BatchSummary }) {
   return (
     <>
-      {(Object.keys(counts) as Outcome[]).map((o) => (
-        <Badge key={o} tone={OUTCOME_TONE[o]}>
-          {OUTCOME_LABEL[o]} {counts[o]}
-        </Badge>
-      ))}
-      <span className="muted small">{rows.reduce((n, r) => n + r.stakeholders.length, 0)} stakeholders</span>
+      {(Object.keys(OUTCOME_LABEL) as Outcome[]).map((o) =>
+        summary.counts[o] ? (
+          <Badge key={o} tone={OUTCOME_TONE[o]}>
+            {OUTCOME_LABEL[o]} {summary.counts[o]!.toLocaleString()}
+          </Badge>
+        ) : null,
+      )}
+      <span className="muted small">{summary.stakeholders.toLocaleString()} stakeholders</span>
     </>
   );
 }

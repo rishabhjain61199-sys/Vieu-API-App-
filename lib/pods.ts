@@ -3,7 +3,6 @@
 import { useEffect, useState } from "react";
 import { HISTORY_EVENT, listEntries, type HistoryEntry } from "./history";
 import { tenantKey } from "./tenant";
-import { rowToRecord, type RunRecord } from "./types";
 
 /**
  * The Partner API returns only people, each tagged with a pod (`swimlane`), so an
@@ -22,8 +21,8 @@ export function tenantPods(entries: HistoryEntry[], tenant?: string, extra: Reco
   };
   for (const e of entries) {
     if (tenantKey(e.tenant) !== want) continue;
-    const records = e.kind === "lookup" ? [e.data] : e.data.rows.map(rowToRecord).filter((r): r is RunRecord => !!r);
-    for (const r of records) add(r.stakeholders);
+    if (e.kind === "lookup") add(e.data.stakeholders);
+    else for (const pod of e.data.pods ?? []) names.add(pod);
   }
   add(extra);
   return [...names];

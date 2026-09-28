@@ -10,6 +10,17 @@ A small Next.js app. Paste a Vieu Partner API key (the key decides the tenant), 
 | **Batch** | Upload a CSV or paste a list (up to 250). Columns such as `name`, `domain`, `website`, `linkedin_url`, `company_id`, `account_id` are detected automatically. Rows resolve and check in parallel (5 at a time). Rows matched by name only against several candidates are marked **Check match**. One confirmation generates for every eligible row, then they're all polled together. Exports: all stakeholders, plus a one-row-per-company summary. |
 | **History** | Past lookups and batches, stored in this browser's IndexedDB and saved as soon as generation starts, so a closed tab can pick up where it left off. Reopen, re-export, **Run again**, or **Resume and re-check** anything still generating. Entries are tagged with the tenant and can be filtered by it. Saving can be turned off, and history can be cleared. The API key is never stored. |
 
+## Large batches (up to 2,000 companies)
+
+- **Pace:** every call in the tab goes through one limiter at 25/s (1,500/min), half the tenant's 3,000/min limit. A 429 pauses all calls until `Retry-After` passes.
+- **Generation queue:** at most N seeds run at once (default 20, set in the Generate confirmation). The rest wait as "Queued to generate" and start as others finish. Each row's 12-minute watch starts when its own seed starts. The progress line shows running, queued and done, plus an estimate. **Stop queue** puts not-yet-started rows back.
+- **Sleep:** if the laptop sleeps, running seeds keep going in Vieu and the queue pauses. On wake, rows are re-checked, and time asleep doesn't count toward the watch window. **Keep screen awake** (Wake Lock) stops the display sleeping while the tab is in front.
+- **Table:** 100 rows per page, with filters, sorting, and select-all across every page.
+
+## History storage
+
+Always on, one History row per batch (however many companies) and one per looked-up company, updated on re-run. Batch companies are stored as separate IndexedDB records, and only changed rows are written (at most every 1.5s), so large batches don't stall the page. The app requests persistent storage, so the browser doesn't clear it under disk pressure. **Download backup / Restore backup** in History moves everything between browsers. Deleting asks first. Every field Vieu returns for a stakeholder is kept, and exports add any fields beyond the standard 12 columns at the end.
+
 ## Tenant detection
 
 The Partner API has no "who am I" endpoint, so when a key is pasted the app calls `GET /introductions?pageSize=50` once. The most common point-of-contact email domain (users inside the key's tenant) becomes the tenant name, e.g. `vieu.com`. Several keys for the same tenant resolve to the same name. If the key lacks `introduction:read-write`, or the tenant has no introductions, the tenant shows as "unknown" and everything else still works. The same call rejects an invalid key right away. Re-running a History entry with a key for a different tenant asks for confirmation first. Two tenants at once means two browser tabs.

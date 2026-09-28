@@ -451,3 +451,9 @@ a.person-name:hover { color: var(--accent-ink); text-decoration: underline; }
 .pod-empty .pod-name { color: var(--ink-2); }
 .pod-empty .pod-count { color: var(--ink-3); }
 .chev-spacer { width: 18px; flex: none; }
+
+/* Large-batch queue + paging */
+.seeds-input { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; font-size: 15px; }
+.seeds-input input { width: 64px; font: inherit; padding: 4px 8px; border: 1px solid var(--line); border-radius: 8px; }
+.progress-note strong { color: var(--ink); }
+.pager { display: flex; align-items: center; justify-content: center; gap: 14px; padding: 12px; border-top: 1px solid var(--line); }
