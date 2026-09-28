@@ -1,0 +1,81 @@
+# Stakeholder Lookup (Vieu Partner API)
+
+A small Next.js app. Paste a Vieu Partner API key (the key decides the tenant), find a company or upload a list, and get that tenant's stakeholders grouped by power pod. If they don't exist yet, it generates them and says whether each result was **already seeded** or **newly generated**.
+
+## What it does
+
+| Tab | What you get |
+| --- | --- |
+| **Lookup** | Search by name, domain, email, LinkedIn URL, company id or account id. Pick the right match (every match's seeding status is checked in parallel). Summary card, pods, data-quality flags, CSV export. |
+| **Batch** | Upload a CSV or paste a list (up to 250). Columns such as `name`, `domain`, `website`, `linkedin_url`, `company_id`, `account_id` are detected automatically. Rows resolve and check in parallel (5 at a time). Rows matched by name only against several candidates are marked **Check match**. One confirmation generates for every eligible row, then they're all polled together. Exports: all stakeholders, plus a one-row-per-company summary. |
+| **History** | Past lookups and batches, stored in this browser's IndexedDB. Reopen, re-export, **Run again**, or **Resume and re-check** a batch that was still generating. Saving can be turned off, and history can be cleared. The API key is never stored. |
+
+## Flow per company
+
+1. `GET /accounts/search` (the most precise identifier wins: accountId > companyId > LinkedIn > domain > name). In a batch it falls back to the next identifier when one finds nothing.
+2. `GET /accounts/stakeholders` with `accountId`, else `companyId`. A 404 by companyId with no account means **no account yet**.
+3. `generated: true` gives **Already seeded**. `pending` joins polling without a POST. `not_started` shows **Generate** (with confirmation). `failed` offers retry.
+4. `POST /accounts/stakeholders/generate`. A `created: true` response means **Account created now**.
+5. Poll every 15s (never faster, per account) for up to 12 min. Completion gives **Newly generated** with the generation time. Timeout gives **Still generating**, with **Check again**.
+
+`GET /accounts/profile` runs in parallel with step 2 to show domain, industry and HQ.
+
+## Key handling
+
+- The key is held in React state only: no localStorage, no cookies. Refreshing the tab clears it. **Clear key** stops all polling.
+- The browser sends it to our API routes in an `x-vieu-key` header (never in a URL, so it can't land in access logs). The route forwards it upstream as `x-api-key`.
+- Routes never log it, and scrub it from any upstream body before responding. Every API response is `Cache-Control: no-store`. HSTS is on. Vercel serves HTTPS only.
+- Each route makes exactly one upstream call, and all polling runs in the browser, so no function runs long.
+
+## Errors
+
+401 → Invalid or revoked key (the app returns to key entry) · 403 → key lacks `account:read-write` · 404 → account not found in this tenant · 429 → "Rate limited, retrying", with back-off that honours `Retry-After` · 5xx → Vieu API error, try again.
+
+## Data-quality flags (display only, nothing is removed)
+
+- **Possible duplicate**: the same normalized name (accents, titles, credentials stripped) or the same LinkedIn profile appears more than once in the account.
+- **Possibly off-target**: a title matching Owner, Founder, CEO, Angel Investor, Available, Open to work, Self-employed, Freelance, Retired, Student or Intern; a listed company that doesn't match the target; or a title like "… at Other Co".
+
+## Run locally
+
+```bash
+npm install
+npm run dev              # http://localhost:3000, live API
+```
+
+Read-only live check (prints field names, never the key, never generates):
+
+```bash
+VIEU_API_KEY=... npm run smoke -- merck.com
+```
+
+Try every branch without touching a real tenant:
+
+```bash
+npm run mock             # mock Partner API on :8787
+VIEU_API_BASE=http://localhost:8787/api/v2 npm run dev
+```
+
+With the mock, the key `bad` returns 401 and `noscope` returns 403. Any other key works. Search terms: `seeded`, `fresh` (no account, so generate creates one), `pending`, `failed`, `merck` (two lookalikes), `ratelimit …` (one 429).
+
+## Deploy (Vercel)
+
+1. Push this repo to GitHub.
+2. In Vercel: **Add New → Project**, import the repo. The framework is detected as Next.js, and there's nothing to configure.
+3. Don't set `VIEU_API_KEY` or `VIEU_API_BASE` in Vercel. Users paste their own key.
+
+## Layout
+
+```
+app/api/_lib/proxy.ts            single-call proxy, key handling, param allow-list
+app/api/accounts/*/route.ts      search, stakeholders, stakeholders/generate, profile
+app/page.tsx                     tabs + key state
+components/Run.tsx               single lookup state machine + polling
+components/Batch.tsx             batch import, parallel resolve/check/generate/poll, BatchView
+components/History.tsx           saved runs
+lib/stakeholders.ts              normalize, flags, pod grouping, CSV rows
+lib/csv.ts / lib/detect.ts       CSV parse, column mapping, input detection
+lib/history.ts                   IndexedDB store (results only)
+scripts/mock-upstream.mjs        local mock of the Partner API
+scripts/smoke.mjs                read-only live check
+```

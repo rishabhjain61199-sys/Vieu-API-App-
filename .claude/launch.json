@@ -1,0 +1,18 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "mock-api",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["scripts/mock-upstream.mjs"],
+      "port": 8787
+    },
+    {
+      "name": "app-mock",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": ["next", "dev", "-p", "3100"],
+      "env": { "VIEU_API_BASE": "http://localhost:8787/api/v2" },
+      "port": 3100
+    }
+  ]
+}
