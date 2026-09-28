@@ -18,7 +18,11 @@ export function detectInput(raw: string): Detected | null {
   const v = raw.trim().replace(/^["']|["']$/g, "").trim();
   if (!v) return null;
   if (/linkedin\.com\/company\//i.test(v)) {
-    const url = /^https?:\/\//i.test(v) ? v : `https://${v}`;
+    // Vieu stores company URLs without a trailing slash, query or hash.
+    let url = (/^https?:\/\//i.test(v) ? v : `https://${v}`).replace(/[?#].*$/, "").replace(/\/+$/, "");
+    try {
+      url = decodeURI(url); // "mcdonald%27s" -> "mcdonald's", as Vieu stores it
+    } catch {}
     return { param: "linkedInUrl", value: url, label: PARAM_LABEL.linkedInUrl };
   }
   if (/^COMP-[0-9a-f-]{36}$/i.test(v)) return { param: "companyId", value: v, label: PARAM_LABEL.companyId };

@@ -16,6 +16,9 @@ const companies = {
   failed: { companyId: "COMP-44444444-4444-4444-4444-444444444444", name: "Failed LLC", accountId: "acc-failed", verified: false },
   merck: { companyId: "COMP-55555555-5555-5555-5555-555555555555", name: "Merck & Co.", accountId: "acc-merck", verified: true },
   merckkgaa: { companyId: "COMP-66666666-6666-6666-6666-666666666666", name: "Merck KGaA", accountId: null, verified: true },
+  mcdmaringa: { companyId: "COMP-77777777-7777-7777-7777-777777777771", name: "Mc Donalds Maringa", accountId: null, verified: true },
+  mcdsc: { companyId: "COMP-77777777-7777-7777-7777-777777777772", name: "Mc Donalds SC", accountId: null, verified: false },
+  mcdcorp: { companyId: "COMP-abc584e4-e88f-4c21-be4a-ac45ed196549", name: "McDonald's", accountId: "acc-mcd", verified: true },
 };
 const state = {
   seeded: { status: "completed", at: 0 },
@@ -24,6 +27,9 @@ const state = {
   failed: { status: "failed", at: 0 },
   merck: { status: "not_started", at: 0 },
   merckkgaa: { status: "none", at: 0 },
+  mcdmaringa: { status: "none", at: 0 },
+  mcdsc: { status: "none", at: 0 },
+  mcdcorp: { status: "completed", at: 0 },
 };
 
 const pods = ["Security", "IT Leadership", "Engineering", "Finance", "Procurement"];
@@ -95,7 +101,12 @@ http
         rateLimitOnce = false;
         return send(res, 429, { message: "Too many requests" }, { "retry-after": "2" });
       }
-      const slugs = term.includes("merck") ? ["merck", "merckkgaa"] : Object.keys(companies).filter((s) => term.includes(s));
+      const li = (q.get("linkedInUrl") || "").toLowerCase();
+      const slugs = li
+        ? li.includes("mcdonald's-corporation") ? ["mcdcorp"] : Object.keys(companies).filter((s) => li.endsWith(`/${s}`))
+        : term.replace(/\s+/g, "").includes("mcdonald")
+          ? ["mcdmaringa", "mcdsc"]
+          : term.includes("merck") ? ["merck", "merckkgaa"] : Object.keys(companies).filter((s) => term.includes(s));
       return send(res, 200, {
         companies: slugs.map((s) => ({
           ...companies[s], linkedInUrl: `https://www.linkedin.com/company/${s}`, imageUrl: null,
@@ -106,7 +117,12 @@ http
     const slug = find(q);
     if (p === "/accounts/profile") {
       if (!slug) return send(res, 404, { message: "Not found" });
-      return send(res, 200, { profile: { companyId: companies[slug].companyId, name: companies[slug].name, domain: `${slug}.com`, industry: "Software", headquarters: "Boston, MA" } });
+      const extra = {
+        mcdcorp: { domain: "https://corporate.mcdonalds.com/", industry: "Restaurants", employeeCount: 313383, headquarters: "US" },
+        mcdmaringa: { domain: "http://mcdonaldsmaringa.com.br", industry: "Restaurants", employeeCount: 42, headquarters: "BR" },
+        mcdsc: { industry: "Food and Beverage", employeeCount: 8, headquarters: "BR" },
+      }[slug] ?? { domain: `${slug}.com`, industry: "Software", employeeCount: 1200, headquarters: "Boston, MA" };
+      return send(res, 200, { profile: { companyId: companies[slug].companyId, name: companies[slug].name, ...extra } });
     }
     if (p === "/accounts/stakeholders" && req.method === "GET") {
       if (!slug || state[slug].status === "none") return send(res, 404, { message: "Account not found" });

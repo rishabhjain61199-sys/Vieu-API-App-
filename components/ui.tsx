@@ -2,6 +2,8 @@
 
 import { useEffect, useRef, type ReactNode } from "react";
 import { LoaderCircle } from "lucide-react";
+import { cleanDomain } from "@/lib/detect";
+import type { CompanyProfile } from "@/lib/types";
 
 export function LinkedInIcon({ size = 16 }: { size?: number }) {
   return (
@@ -82,5 +84,56 @@ export function ConfirmDialog({
         </button>
       </div>
     </dialog>
+  );
+}
+
+function compactCount(n: number) {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(n >= 10_000_000 ? 0 : 1)}M`;
+  if (n >= 1_000) return `${Math.round(n / 1_000)}k`;
+  return String(n);
+}
+
+/** Domain (clickable), size, industry, HQ and LinkedIn for a matched company. */
+export function CompanyFacts({
+  profile,
+  linkedInUrl,
+  loading,
+  plain = false,
+}: {
+  profile?: CompanyProfile | null;
+  linkedInUrl?: string | null;
+  loading?: boolean;
+  /** No links (for use inside a button). */
+  plain?: boolean;
+}) {
+  const domain = cleanDomain(profile?.domain);
+  const facts = [
+    profile?.industry,
+    profile?.employeeCount ? `${compactCount(profile.employeeCount)} employees` : null,
+    profile?.headquarters,
+  ].filter(Boolean);
+  if (!domain && !facts.length && !linkedInUrl) return loading ? <span className="facts muted small">Loading details…</span> : null;
+  return (
+    <span className="facts small">
+      {linkedInUrl && !plain && (
+        <a className="facts-li" href={linkedInUrl} target="_blank" rel="noreferrer" aria-label="LinkedIn page" title={linkedInUrl}>
+          <LinkedInIcon size={14} />
+        </a>
+      )}
+      {domain &&
+        (plain ? (
+          <span className="facts-domain">{domain}</span>
+        ) : (
+          <a href={`https://${domain}`} target="_blank" rel="noreferrer" className="facts-domain">
+            {domain}
+          </a>
+        ))}
+      {facts.map((f) => (
+        <span key={f as string} className="muted">
+          {f}
+        </span>
+      ))}
+      {loading && !facts.length && <span className="muted">…</span>}
+    </span>
   );
 }

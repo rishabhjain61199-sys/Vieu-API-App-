@@ -1,10 +1,10 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeft, Download, FileUp, RefreshCw, TriangleAlert, Upload } from "lucide-react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { ArrowLeft, Download, FileUp, Pencil, RefreshCw, TriangleAlert, Upload } from "lucide-react";
 import { ApiError, formatDuration, isAbort, vieu } from "@/lib/api";
 import { downloadFile, MAX_BATCH_ROWS, slugify, TEMPLATE_CSV, toBatchInputs, today, toCsv } from "@/lib/csv";
-import { PARAM_LABEL, SEARCH_PARAMS } from "@/lib/detect";
+import { detectInput, PARAM_LABEL, SEARCH_PARAMS } from "@/lib/detect";
 import { newId, saveEntry } from "@/lib/history";
 import { announce, primeAudio, setGenerating } from "@/lib/notify";
 import { pool } from "@/lib/pool";
@@ -17,11 +17,12 @@ import {
   type BatchRecord,
   type BatchRow,
   type Company,
+  type CompanyProfile,
   type GenerateResponse,
   type Outcome,
   type StakeholdersResponse,
 } from "@/lib/types";
-import { Badge, CompanyLogo, ConfirmDialog, Spinner } from "./ui";
+import { Badge, CompanyFacts, CompanyLogo, ConfirmDialog, Spinner } from "./ui";
 import { OUTCOME_TONE, RecordView } from "./Summary";
 import { NotifyOptions } from "./NotifyOptions";
 
@@ -30,6 +31,8 @@ const POLL_MS = 15_000; // per account, never faster
 const TICK_MS = 5_000;
 const MAX_WAIT_MS = 12 * 60_000;
 const WATCHING = new Set(["polling", "timeout", "generating"]);
+const BUSY = new Set(["queued", "resolving", "checking"]);
+const NOT_LISTED = "__not_listed__";
 
 function blankRow(label: string, inputs: BatchRow["inputs"]): BatchRow {
   return {
@@ -96,6 +99,17 @@ export function Batch({
     const wasWatching = WATCHING.has(row.stage);
     patch(row.id, { stage: "checking", error: undefined });
     const ids = { accountId: row.accountId, companyId: row.company.companyId };
+    // Profile (domain, size, HQ) in parallel, so lookalike matches are easy to spot.
+    if (row.profile === undefined || row.profile?.companyId !== ids.companyId) {
+      const companyId = ids.companyId;
+      vieu<{ profile?: CompanyProfile }>(apiKey, "GET", "/accounts/profile", { companyId }, opts())
+        .then((r) => {
+          // Ignore if the user has since picked a different match for this row.
+          if (rowsRef.current.find((x) => x.id === row.id)?.company?.companyId === companyId)
+            patch(row.id, { profile: r.profile ? { ...r.profile, companyId } : null });
+        })
+        .catch(() => {});
+    }
     try {
       const r = await vieu<StakeholdersResponse>(apiKey, "GET", "/accounts/stakeholders", idParam(ids), opts());
       const now = Date.now();
@@ -372,11 +386,29 @@ export function Batch({
           onRetry: (r) => (r.company ? checkRow(r) : resolveRow(r)),
           onGenerateRow: (r) => generate([r]),
           onPick: (r, c) => {
-            const next = { ...r, company: c, ambiguous: false, accountId: c.accountId, created: false, stakeholders: [] };
+            const next = { ...r, company: c, profile: undefined, ambiguous: false, accountId: c.accountId, created: false, stakeholders: [] };
             patch(r.id, next);
             checkRow(next);
           },
           onConfirmMatch: (r) => patch(r.id, { ambiguous: false }),
+          onReinput: (r, text) => {
+            const d = detectInput(text);
+            if (!d) return;
+            // Start the row over with only the new identifier.
+            const next = { ...blankRow(text.trim(), { [d.param]: d.value }), id: r.id };
+            setRows((prev) => {
+              const out = prev.map((x) => (x.id === r.id ? next : x));
+              rowsRef.current = out;
+              return out;
+            });
+            resolveRow(next);
+          },
+          onRemove: (r) =>
+            setRows((prev) => {
+              const out = prev.filter((x) => x.id !== r.id);
+              rowsRef.current = out;
+              return out;
+            }),
           onReset: reset,
         }}
       />
@@ -435,6 +467,8 @@ type LiveActions = {
   onGenerateRow: (r: BatchRow) => void;
   onPick: (r: BatchRow, c: Company) => void;
   onConfirmMatch: (r: BatchRow) => void;
+  onReinput: (r: BatchRow, text: string) => void;
+  onRemove: (r: BatchRow) => void;
   onReset: () => void;
 };
 
@@ -453,6 +487,7 @@ export function BatchView({
   extraActions?: React.ReactNode;
 }) {
   const [detailId, setDetailId] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const polling = rows.filter((r) => r.stage === "polling" || r.stage === "generating");
   const working = rows.filter((r) => ["queued", "resolving", "checking"].includes(r.stage)).length;
@@ -616,11 +651,24 @@ export function BatchView({
               {rows.map((r) => {
                 const badge = STAGE_BADGE[r.stage];
                 const canView = r.stakeholders.length > 0;
+                // A row can be re-searched unless it's mid-lookup or its seed is being watched.
+                const canEdit = !!live && !WATCHING.has(r.stage) && !BUSY.has(r.stage);
+                const editing = canEdit && editingId === r.id;
                 return (
-                  <tr key={r.id} className={r.ambiguous ? "row-review" : undefined}>
-                    <td className="cell-input">
-                      <span className="truncate" title={r.label}>{r.label}</span>
-                      {r.matchedBy && <span className="muted small">by {PARAM_LABEL[r.matchedBy]}</span>}
+                  <Fragment key={r.id}>
+                  <tr className={r.ambiguous ? "row-review" : undefined}>
+                    <td>
+                      <div className="cell-input">
+                        <span className="row gap-xs">
+                          <span className="truncate" title={r.label}>{r.label}</span>
+                          {canEdit && !editing && (
+                            <button className="icon-btn icon-btn-sm" aria-label={`Change input for ${r.label}`} title="Search with a different name, domain or LinkedIn URL" onClick={() => setEditingId(r.id)}>
+                              <Pencil size={13} />
+                            </button>
+                          )}
+                        </span>
+                        {r.matchedBy && <span className="muted small">by {PARAM_LABEL[r.matchedBy]}</span>}
+                      </div>
                     </td>
                     <td>
                       {r.company ? (
@@ -632,6 +680,7 @@ export function BatchView({
                                 className="select"
                                 value={r.company.companyId}
                                 onChange={(e) => {
+                                  if (e.target.value === NOT_LISTED) return setEditingId(r.id);
                                   const c = r.candidates.find((x) => x.companyId === e.target.value);
                                   if (c) live.onPick(r, c);
                                 }}
@@ -644,17 +693,25 @@ export function BatchView({
                                     {c.hasAccountPlan ? " · has plan" : ""}
                                   </option>
                                 ))}
+                                <option disabled>──────────</option>
+                                <option value={NOT_LISTED}>Not listed, search differently…</option>
                               </select>
                             ) : (
                               <span className="strong">{r.company.name}</span>
                             )}
+                            <CompanyFacts profile={r.profile} linkedInUrl={r.company.linkedInUrl} loading={r.profile === undefined && BUSY.has(r.stage)} />
                             {r.ambiguous && (
                               <span className="review">
                                 Check match
                                 {live && (
-                                  <button className="link-btn" onClick={() => live.onConfirmMatch(r)}>
-                                    Looks right
-                                  </button>
+                                  <>
+                                    <button className="link-btn" onClick={() => live.onConfirmMatch(r)}>
+                                      Looks right
+                                    </button>
+                                    <button className="link-btn" onClick={() => setEditingId(r.id)}>
+                                      None of these
+                                    </button>
+                                  </>
                                 )}
                               </span>
                             )}
@@ -688,13 +745,37 @@ export function BatchView({
                           Generate
                         </button>
                       )}
-                      {live && (r.stage === "error" || r.stage === "no_match") && (
+                      {live && r.stage === "error" && (
                         <button className="btn btn-ghost small" onClick={() => live.onRetry(r)}>
                           Retry
                         </button>
                       )}
+                      {live && r.stage === "no_match" && !editing && (
+                        <button className="btn btn-ghost small" onClick={() => setEditingId(r.id)}>
+                          Search differently
+                        </button>
+                      )}
                     </td>
                   </tr>
+                  {editing && live && (
+                    <tr className="row-edit">
+                      <td colSpan={6}>
+                        <RowEditor
+                          row={r}
+                          onSearch={(text) => {
+                            setEditingId(null);
+                            live.onReinput(r, text);
+                          }}
+                          onRemove={() => {
+                            setEditingId(null);
+                            live.onRemove(r);
+                          }}
+                          onCancel={() => setEditingId(null)}
+                        />
+                      </td>
+                    </tr>
+                  )}
+                  </Fragment>
                 );
               })}
             </tbody>
@@ -702,5 +783,55 @@ export function BatchView({
         </div>
       </section>
     </>
+  );
+}
+
+/** Inline "search this row differently": paste a LinkedIn URL, domain, id or a better name. */
+function RowEditor({
+  row,
+  onSearch,
+  onRemove,
+  onCancel,
+}: {
+  row: BatchRow;
+  onSearch: (text: string) => void;
+  onRemove: () => void;
+  onCancel: () => void;
+}) {
+  const [text, setText] = useState("");
+  const detected = detectInput(text);
+  return (
+    <form
+      className="row-editor"
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (detected) onSearch(text);
+      }}
+      onKeyDown={(e) => e.key === "Escape" && onCancel()}
+    >
+      <p className="small">
+        Find the right company for <strong>{row.label}</strong>. A LinkedIn URL or domain gives an exact match.
+      </p>
+      <div className="row gap wrap">
+        <input
+          className="input input-plain grow"
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          placeholder="https://www.linkedin.com/company/…  or  company.com  or a name"
+          aria-label={`New input for ${row.label}`}
+          autoFocus
+        />
+        <button className="btn btn-primary small" disabled={!detected}>
+          Search
+        </button>
+        <button type="button" className="btn btn-ghost small" onClick={onCancel}>
+          Cancel
+        </button>
+        <button type="button" className="link-btn small danger" onClick={onRemove}>
+          Remove from batch
+        </button>
+      </div>
+      {detected && <p className="hint">Searching by {detected.label}{detected.param !== "query" && <>: <code>{detected.value}</code></>}</p>}
+    </form>
   );
 }

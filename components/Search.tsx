@@ -1,11 +1,11 @@
 "use client";
 
 import { useCallback, useRef, useState } from "react";
-import { BadgeCheck, Search as SearchIcon } from "lucide-react";
+import { BadgeCheck, Globe, Search as SearchIcon } from "lucide-react";
 import { ApiError, isAbort, vieu } from "@/lib/api";
-import { idParam, type Company, type StakeholdersResponse } from "@/lib/types";
-import { detectInput } from "@/lib/detect";
-import { Badge, CompanyLogo, LinkedInIcon, Spinner } from "./ui";
+import { idParam, type Company, type CompanyProfile, type StakeholdersResponse } from "@/lib/types";
+import { cleanDomain, detectInput } from "@/lib/detect";
+import { Badge, CompanyFacts, CompanyLogo, LinkedInIcon, Spinner } from "./ui";
 
 type Status = { state: "loading" } | { state: "ok"; data: StakeholdersResponse } | { state: "error"; status: number };
 
@@ -44,6 +44,7 @@ export function Search({
   const [rateNote, setRateNote] = useState(false);
   const [results, setResults] = useState<Company[] | null>(null);
   const [statuses, setStatuses] = useState<Record<string, Status>>({});
+  const [profiles, setProfiles] = useState<Record<string, CompanyProfile | null>>({});
   const [domainHint, setDomainHint] = useState<string | undefined>();
   const abortRef = useRef<AbortController | null>(null);
   const detected = detectInput(input);
@@ -81,6 +82,13 @@ export function Search({
       });
       const companies = (res.companies ?? []).slice(0, 5);
       setResults(companies);
+      setProfiles({});
+      // Domain / size / HQ for each match, all at once, to tell lookalikes apart.
+      companies.forEach((c) =>
+        vieu<{ profile?: CompanyProfile }>(apiKey, "GET", "/accounts/profile", { companyId: c.companyId }, { signal: ac.signal })
+          .then((r) => setProfiles((p) => ({ ...p, [c.companyId]: r.profile ?? null })))
+          .catch(() => setProfiles((p) => ({ ...p, [c.companyId]: null }))),
+      );
       setDomainHint(detected.param === "webDomain" ? detected.value : undefined);
       checkStatuses(companies, ac.signal);
     } catch (err) {
@@ -143,6 +151,7 @@ export function Search({
                       {c.name}
                       {c.verified && <BadgeCheck size={16} className="verified" aria-label="Verified" />}
                     </span>
+                    <CompanyFacts plain profile={profiles[c.companyId]} loading={!(c.companyId in profiles)} />
                     <span className="match-meta">
                       {c.hasAccountPlan ? <Badge tone="accent">Has plan</Badge> : <Badge>No plan</Badge>}
                       <StatusBadge s={statuses[c.companyId]} company={c} />
@@ -150,6 +159,18 @@ export function Search({
                     </span>
                   </span>
                   </button>
+                  {cleanDomain(profiles[c.companyId]?.domain) && (
+                    <a
+                      className="icon-link icon-link-muted"
+                      href={`https://${cleanDomain(profiles[c.companyId]?.domain)}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      aria-label={`${c.name} website`}
+                      title={cleanDomain(profiles[c.companyId]?.domain)}
+                    >
+                      <Globe size={20} />
+                    </a>
+                  )}
                   {c.linkedInUrl && (
                     <a className="icon-link" href={c.linkedInUrl} target="_blank" rel="noreferrer" aria-label={`${c.name} on LinkedIn`}>
                       <LinkedInIcon size={20} />

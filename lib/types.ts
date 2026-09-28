@@ -1,4 +1,4 @@
-import type { SearchParam } from "./detect";
+import { cleanDomain, type SearchParam } from "./detect";
 
 export type Company = {
   companyId: string;
@@ -113,6 +113,8 @@ export type BatchRow = {
   matchedBy?: SearchParam;
   candidates: Company[];
   company: Company | null;
+  /** Domain, size, industry, HQ of the matched company, to tell lookalikes apart. */
+  profile?: CompanyProfile | null;
   ambiguous: boolean;
   stage: RowStage;
   error?: string;
@@ -146,7 +148,9 @@ export function rowToRecord(row: BatchRow): RunRecord | null {
   if (!outcome) return null;
   return {
     company: row.company,
-    domain: row.inputs.webDomain,
+    domain: row.inputs.webDomain ?? cleanDomain(row.profile?.domain),
+    industry: row.profile?.industry,
+    headquarters: row.profile?.headquarters,
     accountId: row.accountId,
     created: row.created,
     outcome,
