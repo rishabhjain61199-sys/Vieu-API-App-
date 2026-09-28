@@ -79,9 +79,8 @@ function itemFromCells(cells: string[]): BatchInput | null {
  * Turns an uploaded CSV or a pasted list into search inputs. With a recognised
  * header, columns are mapped by name. Without one:
  * - a file, or a tab-separated paste (from a spreadsheet): one row is one company;
- * - a comma/semicolon paste on one line: every entry is its own company;
- * - a comma paste over several lines: a line is one company when it holds at most
- *   one of each kind ("Stripe, stripe.com"), otherwise each entry is its own company.
+ * - any other paste: every line and every comma/semicolon-separated entry is its own
+ *   company (legal suffixes like "Inc." and quoted names stay attached).
  */
 export function toBatchInputs(
   text: string,
@@ -98,7 +97,6 @@ export function toBatchInputs(
     : [];
   const tabbed = /\t/.test(text.split(/\r?\n/, 1)[0] ?? "");
   const listPaste = source === "paste" && !hasHeader && !tabbed;
-  const singleLine = body.length === 1;
 
   const candidates: BatchInput[] = [];
   for (const r of body) {
@@ -124,9 +122,7 @@ export function toBatchInputs(
     const cells = listPaste
       ? mergeSuffixes(r.flatMap((c) => c.split(";")).map((c) => c.trim()).filter(Boolean))
       : r.filter(Boolean);
-    const kinds = cells.map((c) => detectInput(c)?.param).filter(Boolean);
-    const oneCompany = !listPaste || (!singleLine && new Set(kinds).size === kinds.length);
-    const groups = oneCompany ? [cells] : cells.map((c) => [c]);
+    const groups = listPaste ? cells.map((c) => [c]) : [cells];
     for (const g of groups) {
       const item = itemFromCells(g);
       if (item) candidates.push(item);
