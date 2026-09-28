@@ -322,3 +322,10 @@ a.person-name:hover { color: var(--accent-ink); text-decoration: underline; }
 @media (max-width: 640px) {
   .match-meta .mono { display: none; }
 }
+
+/* Notification opt-ins */
+.notify-opts { border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 10px 14px 12px; margin: 4px 0 0; display: flex; flex-wrap: wrap; gap: 8px 18px; }
+.notify-opts legend { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--ink-3); padding: 0 4px; }
+.notify-opts .hint { flex-basis: 100%; margin: 0; }
+.notify-compact { border: 0; padding: 0; }
+.toggle input:disabled + svg { opacity: 0.4; }

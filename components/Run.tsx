@@ -5,6 +5,8 @@ import { Clock, RefreshCw, TriangleAlert } from "lucide-react";
 import { ApiError, formatDuration, isAbort, sleep, vieu } from "@/lib/api";
 import { analyze, downloadStakeholderCsv } from "@/lib/stakeholders";
 import { newId, saveEntry } from "@/lib/history";
+import { cleanDomain } from "@/lib/detect";
+import { announce, primeAudio, setGenerating } from "@/lib/notify";
 import {
   idParam,
   type Company,
@@ -17,6 +19,7 @@ import {
 import { ConfirmDialog, Spinner } from "./ui";
 import { Pods } from "./Pods";
 import { Summary, usePodNav } from "./Summary";
+import { NotifyOptions } from "./NotifyOptions";
 
 const POLL_MS = 15_000; // API asks for no more than one poll per 15s
 const MAX_WAIT_MS = 12 * 60_000;
@@ -208,7 +211,8 @@ export function Run({
     };
   }, [phase]);
 
-  const domain = profile?.domain || domainHint;
+  // Prefer the domain the user typed; the profile field can be a short link.
+  const domain = domainHint || cleanDomain(profile?.domain);
   const analysis = useMemo(
     () => (resp?.stakeholders?.length ? analyze(resp.stakeholders, { name: company.name, domain }) : null),
     [resp, company.name, domain],
@@ -218,6 +222,29 @@ export function Run({
   const showResults = !!analysis && (phase === "results" || phase === "timeout" || phase === "failed");
   const accountId = ids.current.accountId;
   const genMs = outcome === "newly_generated" && genStart && genEnd ? genEnd - genStart : null;
+
+  // Tab title while this seed is watched, and an alert when a watched seed ends.
+  const prevPhase = useRef<Phase>(phase);
+  useEffect(() => {
+    const source = `run-${entryId.current}`;
+    setGenerating(source, phase === "polling" ? 1 : 0);
+    const was = prevPhase.current;
+    prevPhase.current = phase;
+    if (was === "polling" && phase === "results") {
+      const n = analysis?.people.length ?? 0;
+      announce({
+        tag: source,
+        title: `Stakeholders ready: ${company.name}`,
+        body: `${n} stakeholders in ${pods.length} power pods${genMs ? ` · generated in ${formatDuration(genMs)}` : ""}`,
+      });
+    } else if (was === "polling" && phase === "failed") {
+      announce({ tag: source, title: `Generation failed: ${company.name}`, body: "Open the app to retry." });
+    } else if (was === "polling" && phase === "timeout") {
+      announce({ tag: source, title: `Still generating: ${company.name}`, body: "Not finished after 12 minutes. Open the app to check again." });
+    }
+    return () => setGenerating(source, 0);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase]);
 
   // Save to history once the run reaches a state worth coming back to.
   useEffect(() => {
@@ -295,6 +322,7 @@ export function Run({
             <span className="muted">Usually under 10 minutes. Checks every 15s, stops after 12 min.</span>
             {lastChecked && <span className="muted">Last checked {formatDuration(now - lastChecked)} ago.</span>}
           </p>
+          <NotifyOptions compact />
           <p className="note">You can leave this tab open and come back. Refreshing or closing it clears your key and stops the watch, but generation keeps running in Vieu.</p>
         </section>
       )}
@@ -348,11 +376,15 @@ export function Run({
         open={confirming}
         title={`Generate stakeholders for ${company.name}?`}
         confirmLabel="Generate"
-        onConfirm={generate}
+        onConfirm={() => {
+          primeAudio();
+          generate();
+        }}
         onCancel={() => setConfirming(false)}
       >
         <p>This writes to the tenant your key belongs to. It starts power pod seeding for this company{!accountId && " and creates an account for it"}.</p>
         <p className="muted small">It usually takes under 10 minutes. You can watch progress here.</p>
+        <NotifyOptions />
       </ConfirmDialog>
     </>
   );

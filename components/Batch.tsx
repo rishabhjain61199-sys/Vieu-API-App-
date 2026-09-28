@@ -6,6 +6,7 @@ import { ApiError, formatDuration, isAbort, vieu } from "@/lib/api";
 import { downloadFile, MAX_BATCH_ROWS, slugify, TEMPLATE_CSV, toBatchInputs, today, toCsv } from "@/lib/csv";
 import { PARAM_LABEL, SEARCH_PARAMS } from "@/lib/detect";
 import { newId, saveEntry } from "@/lib/history";
+import { announce, primeAudio, setGenerating } from "@/lib/notify";
 import { pool } from "@/lib/pool";
 import { analyze, companyCore, CSV_COLUMNS, stakeholderCsvRows } from "@/lib/stakeholders";
 import {
@@ -22,6 +23,7 @@ import {
 } from "@/lib/types";
 import { Badge, CompanyLogo, ConfirmDialog, Spinner } from "./ui";
 import { OUTCOME_TONE, RecordView } from "./Summary";
+import { NotifyOptions } from "./NotifyOptions";
 
 const CONCURRENCY = 5;
 const POLL_MS = 15_000; // per account, never faster
@@ -205,6 +207,30 @@ export function Batch({
 
   useEffect(() => () => ac.current.abort(), []);
 
+  // Tab title while seeds run; one alert when the last watched seed in the batch ends.
+  const activeCount = rows.filter((r) => r.stage === "polling" || r.stage === "generating").length;
+  const wasActive = useRef(false);
+  useEffect(() => {
+    setGenerating("batch", activeCount);
+    if (activeCount > 0) {
+      wasActive.current = true;
+      return;
+    }
+    if (!wasActive.current) return;
+    wasActive.current = false;
+    const count = (s: BatchRow["stage"]) => rowsRef.current.filter((r) => r.stage === s).length;
+    const parts = [
+      count("completed") && `${count("completed")} newly generated`,
+      count("seeded") && `${count("seeded")} already seeded`,
+      count("failed") && `${count("failed")} failed`,
+      count("timeout") && `${count("timeout")} still generating`,
+    ].filter(Boolean);
+    announce({ tag: `batch-${entry.current.id}`, title: `Batch done: ${name}`, body: parts.join(" · ") || "All rows finished." });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeCount]);
+
+  useEffect(() => () => setGenerating("batch", 0), []);
+
   // Persist to history (debounced) whenever rows change.
   useEffect(() => {
     if (!rows.length) return;
@@ -356,7 +382,10 @@ export function Batch({
         open={confirming}
         title={`Generate stakeholders for ${eligible.length} ${eligible.length === 1 ? "company" : "companies"}?`}
         confirmLabel="Generate"
-        onConfirm={() => generate(eligible)}
+        onConfirm={() => {
+          primeAudio();
+          generate(eligible);
+        }}
         onCancel={() => setConfirming(false)}
       >
         <p>This writes to the tenant your key belongs to. It starts power pod seeding for each of them.</p>
@@ -367,6 +396,7 @@ export function Batch({
         )}
         {needsReview > 0 && <p className="warn-text">{needsReview} rows with an uncertain match are skipped until you confirm them.</p>}
         <p className="muted small">Each usually takes under 10 minutes. They run in parallel and you can watch them here.</p>
+        <NotifyOptions />
       </ConfirmDialog>
     </>
   );
@@ -539,6 +569,7 @@ export function BatchView({
             Generating for {polling.length} {polling.length === 1 ? "company" : "companies"}. Each is checked every 15s for up to 12 minutes. You can leave this tab open. Refreshing it clears your key, but you can resume from History.
           </p>
         )}
+        {polling.length > 0 && <NotifyOptions compact />}
         {notice && <p className="warn-text">{notice}</p>}
 
         <div className="row gap wrap">

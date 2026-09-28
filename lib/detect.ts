@@ -29,3 +29,10 @@ export function detectInput(raw: string): Detected | null {
   if (domain && !/\s/.test(v)) return { param: "webDomain", value: domain[1].toLowerCase(), label: PARAM_LABEL.webDomain };
   return { param: "query", value: v, label: PARAM_LABEL.query };
 }
+
+/** Hostname only ("http://merck.us/2J2xAUh" → "merck.us"), or undefined if it isn't a domain. */
+export function cleanDomain(raw?: string | null): string | undefined {
+  if (!raw) return undefined;
+  const m = raw.trim().match(DOMAIN);
+  return m ? m[1].toLowerCase() : undefined;
+}
