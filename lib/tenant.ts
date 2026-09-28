@@ -36,3 +36,6 @@ export async function detectTenant(key: string, signal?: AbortSignal): Promise<T
     return { status: "unknown", reason: "Couldn't identify the tenant right now." };
   }
 }
+
+/** Tenant names group case- and space-insensitively; several keys can share one tenant. */
+export const tenantKey = (t?: string) => (t ?? "").trim().replace(/\s+/g, " ").toLowerCase();

@@ -50,11 +50,13 @@ export function Batch({
   tenant,
   onKeyInvalid,
   resume,
+  onViewStakeholders,
 }: {
   apiKey: string;
   tenant?: string;
   onKeyInvalid: (msg: string) => void;
   resume: ResumeBatch | null;
+  onViewStakeholders?: (companyId: string) => void;
 }) {
   const [rows, setRows] = useState<BatchRow[]>([]);
   const [name, setName] = useState("");
@@ -415,6 +417,7 @@ export function Batch({
         name={name}
         rows={rows}
         notice={notice}
+        onView={onViewStakeholders}
         live={{
           eligible: eligible.length,
           needsReview,
@@ -606,12 +609,15 @@ export function BatchView({
   notice,
   live,
   extraActions,
+  onView,
 }: {
   name: string;
   rows: BatchRow[];
   notice?: string | null;
   live?: LiveActions;
   extraActions?: React.ReactNode;
+  /** Open this row's stakeholders in the Stakeholders tab (falls back to an inline detail view). */
+  onView?: (companyId: string) => void;
 }) {
   const [detailId, setDetailId] = useState<string | null>(null);
   const [pickerId, setPickerId] = useState<string | null>(null);
@@ -997,18 +1003,23 @@ export function BatchView({
                         {r.created ? <Badge tone="accent">Created now</Badge> : r.accountId ? <Badge tone="good">Existing</Badge> : r.company ? <Badge>None yet</Badge> : null}
                       </td>
                       <td>
-                        <Badge tone={badge.tone}>
-                          {["resolving", "checking", "generating", "polling"].includes(r.stage) && <Spinner size={12} />}
-                          {badge.label}
-                        </Badge>
-                        {r.stage === "polling" && r.genStart && <span className="muted small"> {formatDuration(now - r.genStart)}</span>}
-                        {r.stage === "completed" && r.genStart && r.genEnd && <span className="muted small"> in {formatDuration(r.genEnd - r.genStart)}</span>}
+                        <span className="cell-status">
+                          <Badge tone={badge.tone}>
+                            {["resolving", "checking", "generating", "polling"].includes(r.stage) && <Spinner size={12} />}
+                            {badge.label}
+                          </Badge>
+                          {r.stage === "polling" && r.genStart && <span className="muted small nowrap">{formatDuration(now - r.genStart)}</span>}
+                          {r.stage === "completed" && r.genStart && r.genEnd && <span className="muted small nowrap">in {formatDuration(r.genEnd - r.genStart)}</span>}
+                        </span>
                         {r.error && <div className="error-text small">{r.error}</div>}
                       </td>
                       <td className="num">{r.stakeholders.length || ""}</td>
                       <td className="cell-actions">
                         {canView && (
-                          <button className="btn btn-ghost small" onClick={() => setDetailId(r.id)}>
+                          <button
+                            className="btn btn-ghost small"
+                            onClick={() => (onView && r.company ? onView(r.company.companyId) : setDetailId(r.id))}
+                          >
                             View
                           </button>
                         )}

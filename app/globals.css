@@ -419,3 +419,25 @@ a.person-name:hover { color: var(--accent-ink); text-decoration: underline; }
 .badge { font-size: 14px; }
 .facts { font-size: 14px; }
 .person-title, .person-loc { font-size: 15px; }
+
+/* Stakeholders tab */
+.st-toolbar { display: flex; flex-direction: column; gap: 12px; }
+.st-summary { font-size: 15px; }
+.select-lg { font-size: 15px; padding: 7px 10px; border-radius: 10px; max-width: 280px; }
+.st-table td { vertical-align: top; }
+.st-name .person-name { font-size: 16px; }
+.pod-tag {
+  font: inherit; font-size: 14px; font-weight: 700; color: var(--accent-ink); background: var(--accent-tint); border: 0;
+  padding: 3px 10px; border-radius: 999px; cursor: pointer; white-space: nowrap;
+}
+.pod-tag:hover { background: #e2d8ff; }
+.link-btn.plain { text-decoration: none; color: var(--ink); font-weight: 700; text-align: left; }
+.link-btn.plain:hover { color: var(--accent-ink); text-decoration: underline; }
+.table tbody tr.row-flagged:not(.row-selected) td { background: #fffcf3; }
+.st-table .flag { display: inline-block; margin: 0 4px 4px 0; font-size: 13px; }
+.show-more { display: flex; align-items: center; justify-content: center; gap: 12px; padding: 14px; border-top: 1px solid var(--line); }
+
+/* Batch cells that were squeezing */
+.cell-input { min-width: 150px; }
+.cell-input .small { white-space: nowrap; }
+.cell-status { display: inline-flex; align-items: center; gap: 8px; flex-wrap: nowrap; white-space: nowrap; }

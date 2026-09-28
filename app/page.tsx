@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { History as HistoryIcon, KeyRound, Layers, Search as SearchIcon, X } from "lucide-react";
+import { History as HistoryIcon, KeyRound, Layers, Search as SearchIcon, Users, X } from "lucide-react";
 import type { Company, LookupResume } from "@/lib/types";
 import { setTitleLabel } from "@/lib/notify";
 import { detectTenant, type Tenant } from "@/lib/tenant";
@@ -11,13 +11,15 @@ import { Search } from "@/components/Search";
 import { Run } from "@/components/Run";
 import { Batch, type ResumeBatch } from "@/components/Batch";
 import { History } from "@/components/History";
+import { Stakeholders, type StakeholderFocus } from "@/components/Stakeholders";
 
-type Tab = "lookup" | "batch" | "history";
+type Tab = "lookup" | "batch" | "stakeholders" | "history";
 type Selection = { company: Company; domainHint?: string; run: number; resume?: LookupResume };
 
 const TABS: { id: Tab; label: string; icon: typeof SearchIcon }[] = [
   { id: "lookup", label: "Lookup", icon: SearchIcon },
   { id: "batch", label: "Batch", icon: Layers },
+  { id: "stakeholders", label: "Stakeholders", icon: Users },
   { id: "history", label: "History", icon: HistoryIcon },
 ];
 
@@ -34,6 +36,12 @@ export default function Home() {
   const [selection, setSelection] = useState<Selection | null>(null);
   const [resume, setResume] = useState<ResumeBatch | null>(null);
   const [session, setSession] = useState(0);
+  const [focus, setFocus] = useState<StakeholderFocus>(null);
+  const viewStakeholders = (companyId: string) => {
+    setFocus((f) => ({ companyId, n: (f?.n ?? 0) + 1 }));
+    setTab("stakeholders");
+    window.scrollTo({ top: 0 });
+  };
 
   useEffect(() => setTitleLabel(apiKey ? keyLabel : ""), [apiKey, keyLabel]);
 
@@ -79,7 +87,7 @@ export default function Home() {
       </nav>
 
       <main className="stack">
-        {!apiKey && tab !== "history" && (
+        {!apiKey && (tab === "lookup" || tab === "batch") && (
           <KeyGate
             error={keyError}
             onSubmit={(k) => {
@@ -118,13 +126,16 @@ export default function Home() {
               )}
             </div>
             <div className="stack" hidden={tab !== "batch"} key={`batch-${session}`}>
-              <Batch apiKey={apiKey} tenant={keyLabel || undefined} onKeyInvalid={clearKey} resume={resume} />
+              <Batch apiKey={apiKey} tenant={keyLabel || undefined} onKeyInvalid={clearKey} resume={resume} onViewStakeholders={viewStakeholders} />
             </div>
           </>
         )}
 
+        {tab === "stakeholders" && <Stakeholders currentTenant={apiKey ? keyLabel : undefined} focus={focus} />}
+
         {tab === "history" && (
           <History
+            onViewStakeholders={viewStakeholders}
             hasKey={!!apiKey}
             currentTenant={apiKey ? keyLabel : undefined}
             onResumeBatch={(b) => {

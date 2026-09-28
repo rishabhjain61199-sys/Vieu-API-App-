@@ -12,6 +12,7 @@ import {
   type HistoryEntry,
 } from "@/lib/history";
 import { OUTCOME_LABEL, STAGE_OUTCOME, type Company, type LookupResume, type Outcome } from "@/lib/types";
+import { tenantKey } from "@/lib/tenant";
 import { Badge, CompanyLogo, ConfirmDialog } from "./ui";
 import { OUTCOME_TONE, RecordView } from "./Summary";
 import { BatchView, type ResumeBatch } from "./Batch";
@@ -24,8 +25,6 @@ function ago(ts: number) {
   return new Date(ts).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
 }
 
-/** Tenant names group case- and space-insensitively; several keys can share one tenant. */
-const tenantKey = (t?: string) => (t ?? "").trim().replace(/\s+/g, " ").toLowerCase();
 
 const UNLABELED = "__unlabeled__";
 
@@ -34,9 +33,11 @@ export function History({
   currentTenant,
   onResumeBatch,
   onRerunLookup,
+  onViewStakeholders,
 }: {
   hasKey: boolean;
   currentTenant?: string;
+  onViewStakeholders?: (companyId: string) => void;
   onResumeBatch: (b: ResumeBatch) => void;
   onRerunLookup: (c: Company, domain?: string, resume?: LookupResume) => void;
 }) {
@@ -123,6 +124,7 @@ export function History({
           <BatchView
             name={open.data.name}
             rows={open.data.rows}
+            onView={onViewStakeholders}
             extraActions={
               <button
                 className="btn btn-ghost small"
