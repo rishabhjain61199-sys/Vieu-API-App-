@@ -111,6 +111,8 @@ export type BatchRow = {
   label: string;
   inputs: Partial<Record<SearchParam, string>>;
   matchedBy?: SearchParam;
+  /** The match was picked by the user in the match picker. */
+  manual?: boolean;
   candidates: Company[];
   company: Company | null;
   /** Domain, size, industry, HQ of the matched company, to tell lookalikes apart. */

@@ -1,10 +1,10 @@
 "use client";
 
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeft, Download, FileUp, Pencil, RefreshCw, TriangleAlert, Upload } from "lucide-react";
+import { ArrowLeft, BadgeCheck, Download, FileUp, ListChecks, RefreshCw, TriangleAlert, Upload } from "lucide-react";
 import { ApiError, formatDuration, isAbort, vieu } from "@/lib/api";
 import { downloadFile, MAX_BATCH_ROWS, slugify, TEMPLATE_CSV, toBatchInputs, today, toCsv } from "@/lib/csv";
-import { detectInput, PARAM_LABEL, SEARCH_PARAMS } from "@/lib/detect";
+import { PARAM_LABEL, SEARCH_PARAMS, type Detected } from "@/lib/detect";
 import { newId, saveEntry } from "@/lib/history";
 import { announce, primeAudio, setGenerating } from "@/lib/notify";
 import { pool } from "@/lib/pool";
@@ -25,6 +25,7 @@ import {
 import { Badge, CompanyFacts, CompanyLogo, ConfirmDialog, Spinner } from "./ui";
 import { OUTCOME_TONE, RecordView } from "./Summary";
 import { NotifyOptions } from "./NotifyOptions";
+import { MatchPicker, type CandidateDetails } from "./MatchPicker";
 
 const CONCURRENCY = 5;
 const POLL_MS = 15_000; // per account, never faster
@@ -274,6 +275,41 @@ export function Batch({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [resume]);
 
+  // Match picker: profile + stakeholder status per candidate, fetched once and shared.
+  const detailPromises = useRef(new Map<string, Promise<CandidateDetails>>());
+  const detailCache = useRef(new Map<string, CandidateDetails>());
+  function candidateDetails(c: Company): Promise<CandidateDetails> {
+    const hit = detailPromises.current.get(c.companyId);
+    if (hit) return hit;
+    const signal = ac.current.signal;
+    const profile = vieu<{ profile?: CompanyProfile }>(apiKey, "GET", "/accounts/profile", { companyId: c.companyId }, { signal })
+      .then((r) => (r.profile ? { ...r.profile, companyId: c.companyId } : null))
+      .catch(() => null);
+    const status = vieu<StakeholdersResponse>(apiKey, "GET", "/accounts/stakeholders", idParam(c), { signal })
+      .then((r): CandidateDetails["status"] =>
+        r.generated
+          ? { kind: "seeded", count: r.stakeholders?.length ?? 0 }
+          : r.seedingStatus === "pending"
+            ? { kind: "pending" }
+            : r.seedingStatus === "failed"
+              ? { kind: "failed" }
+              : { kind: "not_started" },
+      )
+      .catch((e): CandidateDetails["status"] => ((e as ApiError).status === 404 ? { kind: "no_account" } : { kind: "unknown" }));
+    const p = Promise.all([profile, status]).then(([pr, st]) => {
+      const d = { profile: pr, status: st };
+      detailCache.current.set(c.companyId, d);
+      return d;
+    });
+    detailPromises.current.set(c.companyId, p);
+    return p;
+  }
+
+  async function searchCompanies(d: Detected): Promise<Company[]> {
+    const res = await vieu<{ companies: Company[] }>(apiKey, "GET", "/accounts/search", { [d.param]: d.value }, opts());
+    return (res.companies ?? []).slice(0, 5);
+  }
+
   function start(source: string, label: string) {
     const { items, truncated } = toBatchInputs(source);
     if (!items.length) {
@@ -385,23 +421,31 @@ export function Batch({
             rows.filter((r) => r.stage === "timeout").forEach((r) => patch(r.id, { stage: "polling", watchStart: Date.now(), checkedAt: 0 })),
           onRetry: (r) => (r.company ? checkRow(r) : resolveRow(r)),
           onGenerateRow: (r) => generate([r]),
-          onPick: (r, c) => {
-            const next = { ...r, company: c, profile: undefined, ambiguous: false, accountId: c.accountId, created: false, stakeholders: [] };
+          onConfirmMatch: (r) => patch(r.id, { ambiguous: false, manual: true }),
+          loadDetails: candidateDetails,
+          search: searchCompanies,
+          onUse: (r, c, via) => {
+            const next: BatchRow = {
+              ...r,
+              company: c,
+              candidates: [c, ...r.candidates.filter((x) => x.companyId !== c.companyId)],
+              profile: detailCache.current.get(c.companyId)?.profile ?? undefined,
+              ambiguous: false,
+              manual: true,
+              inputs: via ? { ...r.inputs, [via.param]: via.value } : r.inputs,
+              accountId: c.accountId,
+              created: false,
+              noAccount: false,
+              stakeholders: [],
+              stage: "checking",
+              error: undefined,
+              genStart: null,
+              genEnd: null,
+              watchStart: null,
+              joined: false,
+            };
             patch(r.id, next);
             checkRow(next);
-          },
-          onConfirmMatch: (r) => patch(r.id, { ambiguous: false }),
-          onReinput: (r, text) => {
-            const d = detectInput(text);
-            if (!d) return;
-            // Start the row over with only the new identifier.
-            const next = { ...blankRow(text.trim(), { [d.param]: d.value }), id: r.id };
-            setRows((prev) => {
-              const out = prev.map((x) => (x.id === r.id ? next : x));
-              rowsRef.current = out;
-              return out;
-            });
-            resolveRow(next);
           },
           onRemove: (r) =>
             setRows((prev) => {
@@ -465,9 +509,10 @@ type LiveActions = {
   onCheckAgain: () => void;
   onRetry: (r: BatchRow) => void;
   onGenerateRow: (r: BatchRow) => void;
-  onPick: (r: BatchRow, c: Company) => void;
   onConfirmMatch: (r: BatchRow) => void;
-  onReinput: (r: BatchRow, text: string) => void;
+  loadDetails: (c: Company) => Promise<CandidateDetails>;
+  search: (d: Detected) => Promise<Company[]>;
+  onUse: (r: BatchRow, c: Company, via?: Detected) => void;
   onRemove: (r: BatchRow) => void;
   onReset: () => void;
 };
@@ -487,7 +532,28 @@ export function BatchView({
   extraActions?: React.ReactNode;
 }) {
   const [detailId, setDetailId] = useState<string | null>(null);
-  const [editingId, setEditingId] = useState<string | null>(null);
+  const [pickerId, setPickerId] = useState<string | null>(null);
+  // Review mode: total fixed when it starts, so the counter reads "2 of 3" as rows get confirmed.
+  const [review, setReview] = useState<{ total: number; done: number } | null>(null);
+  const canEditRow = (r: BatchRow) => !!live && !WATCHING.has(r.stage) && !BUSY.has(r.stage);
+  const reviewable = rows.filter((r) => r.ambiguous && canEditRow(r));
+
+  function openPicker(id: string | null) {
+    setPickerId(id);
+    if (id) requestAnimationFrame(() => document.getElementById(`row-${id}`)?.scrollIntoView({ behavior: "smooth", block: "center" }));
+  }
+  /** After a pick: in review mode move to the next uncertain row, else close. */
+  function afterPick(doneId: string) {
+    if (!review) return openPicker(null);
+    const next = reviewable.find((r) => r.id !== doneId);
+    if (next) {
+      setReview({ ...review, done: review.done + 1 });
+      openPicker(next.id);
+    } else {
+      setReview(null);
+      openPicker(null);
+    }
+  }
   const [now, setNow] = useState(() => Date.now());
   const polling = rows.filter((r) => r.stage === "polling" || r.stage === "generating");
   const working = rows.filter((r) => ["queued", "resolving", "checking"].includes(r.stage)).length;
@@ -627,10 +693,22 @@ export function BatchView({
             <Download size={16} /> Export summary
           </button>
         </div>
-        {live && live.needsReview > 0 && (
-          <p className="warn-text">
-            <TriangleAlert size={14} /> {live.needsReview} {live.needsReview === 1 ? "row matched" : "rows matched"} by name only with several candidates. Confirm the match before generating.
-          </p>
+        {live && reviewable.length > 0 && (
+          <div className="review-banner">
+            <TriangleAlert size={16} aria-hidden="true" />
+            <span className="grow">
+              {reviewable.length} {reviewable.length === 1 ? "row was" : "rows were"} matched by name only and could be the wrong company. They&apos;re skipped when generating until you confirm them.
+            </span>
+            <button
+              className="btn btn-ghost small"
+              onClick={() => {
+                setReview({ total: reviewable.length, done: 0 });
+                openPicker(reviewable[0].id);
+              }}
+            >
+              <ListChecks size={14} /> Review {reviewable.length} {reviewable.length === 1 ? "match" : "matches"}
+            </button>
+          </div>
         )}
       </section>
 
@@ -651,130 +729,122 @@ export function BatchView({
               {rows.map((r) => {
                 const badge = STAGE_BADGE[r.stage];
                 const canView = r.stakeholders.length > 0;
-                // A row can be re-searched unless it's mid-lookup or its seed is being watched.
-                const canEdit = !!live && !WATCHING.has(r.stage) && !BUSY.has(r.stage);
-                const editing = canEdit && editingId === r.id;
+                const canEdit = canEditRow(r);
+                const picking = canEdit && pickerId === r.id;
+                const reviewStep = review && picking ? { index: review.done + 1, total: Math.max(review.total, review.done + 1) } : undefined;
                 return (
                   <Fragment key={r.id}>
-                  <tr className={r.ambiguous ? "row-review" : undefined}>
-                    <td>
-                      <div className="cell-input">
-                        <span className="row gap-xs">
+                    <tr id={`row-${r.id}`} className={`${r.ambiguous ? "row-review" : ""} ${picking ? "row-picking" : ""}`}>
+                      <td>
+                        <div className="cell-input">
                           <span className="truncate" title={r.label}>{r.label}</span>
-                          {canEdit && !editing && (
-                            <button className="icon-btn icon-btn-sm" aria-label={`Change input for ${r.label}`} title="Search with a different name, domain or LinkedIn URL" onClick={() => setEditingId(r.id)}>
-                              <Pencil size={13} />
-                            </button>
+                          {r.manual ? (
+                            <span className="muted small">chosen by you</span>
+                          ) : (
+                            r.matchedBy && <span className="muted small">by {PARAM_LABEL[r.matchedBy]}</span>
                           )}
-                        </span>
-                        {r.matchedBy && <span className="muted small">by {PARAM_LABEL[r.matchedBy]}</span>}
-                      </div>
-                    </td>
-                    <td>
-                      {r.company ? (
-                        <div className="cell-company">
-                          <CompanyLogo src={r.company.imageUrl} name={r.company.name} size={28} />
-                          <div className="cell-company-main">
-                            {live && r.candidates.length > 1 && !WATCHING.has(r.stage) ? (
-                              <select
-                                className="select"
-                                value={r.company.companyId}
-                                onChange={(e) => {
-                                  if (e.target.value === NOT_LISTED) return setEditingId(r.id);
-                                  const c = r.candidates.find((x) => x.companyId === e.target.value);
-                                  if (c) live.onPick(r, c);
-                                }}
-                                aria-label={`Match for ${r.label}`}
-                              >
-                                {r.candidates.map((c) => (
-                                  <option key={c.companyId} value={c.companyId}>
-                                    {c.name}
-                                    {c.verified ? " (verified)" : ""}
-                                    {c.hasAccountPlan ? " · has plan" : ""}
-                                  </option>
-                                ))}
-                                <option disabled>──────────</option>
-                                <option value={NOT_LISTED}>Not listed, search differently…</option>
-                              </select>
-                            ) : (
-                              <span className="strong">{r.company.name}</span>
-                            )}
-                            <CompanyFacts profile={r.profile} linkedInUrl={r.company.linkedInUrl} loading={r.profile === undefined && BUSY.has(r.stage)} />
-                            {r.ambiguous && (
-                              <span className="review">
-                                Check match
-                                {live && (
-                                  <>
-                                    <button className="link-btn" onClick={() => live.onConfirmMatch(r)}>
-                                      Looks right
-                                    </button>
-                                    <button className="link-btn" onClick={() => setEditingId(r.id)}>
-                                      None of these
-                                    </button>
-                                  </>
+                        </div>
+                      </td>
+                      <td>
+                        {r.company ? (
+                          <div className="cell-company">
+                            <CompanyLogo src={r.company.imageUrl} name={r.company.name} size={28} />
+                            <div className="cell-company-main">
+                              <span className="row gap-xs wrap">
+                                <span className="strong">{r.company.name}</span>
+                                {r.company.verified && <BadgeCheck size={14} className="verified" aria-label="Verified" />}
+                                {canEdit && !picking && (
+                                  <button className="link-btn small" onClick={() => openPicker(r.id)}>
+                                    {r.candidates.length > 1 ? `Change (${r.candidates.length} matches)` : "Change"}
+                                  </button>
                                 )}
                               </span>
-                            )}
+                              <CompanyFacts profile={r.profile} linkedInUrl={r.company.linkedInUrl} loading={r.profile === undefined && BUSY.has(r.stage)} />
+                              {r.ambiguous && !picking && (
+                                <span className="review">
+                                  Check match
+                                  {live && (
+                                    <>
+                                      <button className="link-btn" onClick={() => live.onConfirmMatch(r)}>
+                                        Looks right
+                                      </button>
+                                      <button className="link-btn" onClick={() => openPicker(r.id)}>
+                                        Compare
+                                      </button>
+                                    </>
+                                  )}
+                                </span>
+                              )}
+                            </div>
                           </div>
-                        </div>
-                      ) : (
-                        <span className="muted">—</span>
-                      )}
-                    </td>
-                    <td>
-                      {r.created ? <Badge tone="accent">Created now</Badge> : r.accountId ? <Badge tone="good">Existing</Badge> : r.company ? <Badge>None yet</Badge> : null}
-                    </td>
-                    <td>
-                      <Badge tone={badge.tone}>
-                        {["resolving", "checking", "generating", "polling"].includes(r.stage) && <Spinner size={12} />}
-                        {badge.label}
-                      </Badge>
-                      {r.stage === "polling" && r.genStart && <span className="muted small"> {formatDuration(now - r.genStart)}</span>}
-                      {r.stage === "completed" && r.genStart && r.genEnd && <span className="muted small"> in {formatDuration(r.genEnd - r.genStart)}</span>}
-                      {r.error && <div className="error-text small">{r.error}</div>}
-                    </td>
-                    <td className="num">{r.stakeholders.length || ""}</td>
-                    <td className="cell-actions">
-                      {canView && (
-                        <button className="btn btn-ghost small" onClick={() => setDetailId(r.id)}>
-                          View
-                        </button>
-                      )}
-                      {live && r.company && !r.ambiguous && (r.stage === "not_started" || r.stage === "failed") && (
-                        <button className="btn btn-ghost small" onClick={() => live.onGenerateRow(r)}>
-                          Generate
-                        </button>
-                      )}
-                      {live && r.stage === "error" && (
-                        <button className="btn btn-ghost small" onClick={() => live.onRetry(r)}>
-                          Retry
-                        </button>
-                      )}
-                      {live && r.stage === "no_match" && !editing && (
-                        <button className="btn btn-ghost small" onClick={() => setEditingId(r.id)}>
-                          Search differently
-                        </button>
-                      )}
-                    </td>
-                  </tr>
-                  {editing && live && (
-                    <tr className="row-edit">
-                      <td colSpan={6}>
-                        <RowEditor
-                          row={r}
-                          onSearch={(text) => {
-                            setEditingId(null);
-                            live.onReinput(r, text);
-                          }}
-                          onRemove={() => {
-                            setEditingId(null);
-                            live.onRemove(r);
-                          }}
-                          onCancel={() => setEditingId(null)}
-                        />
+                        ) : (
+                          <span className="muted">—</span>
+                        )}
+                      </td>
+                      <td>
+                        {r.created ? <Badge tone="accent">Created now</Badge> : r.accountId ? <Badge tone="good">Existing</Badge> : r.company ? <Badge>None yet</Badge> : null}
+                      </td>
+                      <td>
+                        <Badge tone={badge.tone}>
+                          {["resolving", "checking", "generating", "polling"].includes(r.stage) && <Spinner size={12} />}
+                          {badge.label}
+                        </Badge>
+                        {r.stage === "polling" && r.genStart && <span className="muted small"> {formatDuration(now - r.genStart)}</span>}
+                        {r.stage === "completed" && r.genStart && r.genEnd && <span className="muted small"> in {formatDuration(r.genEnd - r.genStart)}</span>}
+                        {r.error && <div className="error-text small">{r.error}</div>}
+                      </td>
+                      <td className="num">{r.stakeholders.length || ""}</td>
+                      <td className="cell-actions">
+                        {canView && (
+                          <button className="btn btn-ghost small" onClick={() => setDetailId(r.id)}>
+                            View
+                          </button>
+                        )}
+                        {live && r.company && !r.ambiguous && (r.stage === "not_started" || r.stage === "failed") && (
+                          <button className="btn btn-ghost small" onClick={() => live.onGenerateRow(r)}>
+                            Generate
+                          </button>
+                        )}
+                        {live && r.stage === "error" && (
+                          <button className="btn btn-ghost small" onClick={() => live.onRetry(r)}>
+                            Retry
+                          </button>
+                        )}
+                        {live && r.stage === "no_match" && !picking && (
+                          <button className="btn btn-ghost small" onClick={() => openPicker(r.id)}>
+                            Search differently
+                          </button>
+                        )}
                       </td>
                     </tr>
-                  )}
+                    {picking && live && (
+                      <tr className="row-edit">
+                        <td colSpan={6}>
+                          <MatchPicker
+                            row={r}
+                            review={reviewStep}
+                            loadDetails={live.loadDetails}
+                            search={live.search}
+                            onUse={(c, via) => {
+                              live.onUse(r, c, via);
+                              afterPick(r.id);
+                            }}
+                            onConfirm={() => {
+                              live.onConfirmMatch(r);
+                              afterPick(r.id);
+                            }}
+                            onRemove={() => {
+                              live.onRemove(r);
+                              afterPick(r.id);
+                            }}
+                            onCancel={() => {
+                              setReview(null);
+                              openPicker(null);
+                            }}
+                          />
+                        </td>
+                      </tr>
+                    )}
                   </Fragment>
                 );
               })}
@@ -783,55 +853,5 @@ export function BatchView({
         </div>
       </section>
     </>
-  );
-}
-
-/** Inline "search this row differently": paste a LinkedIn URL, domain, id or a better name. */
-function RowEditor({
-  row,
-  onSearch,
-  onRemove,
-  onCancel,
-}: {
-  row: BatchRow;
-  onSearch: (text: string) => void;
-  onRemove: () => void;
-  onCancel: () => void;
-}) {
-  const [text, setText] = useState("");
-  const detected = detectInput(text);
-  return (
-    <form
-      className="row-editor"
-      onSubmit={(e) => {
-        e.preventDefault();
-        if (detected) onSearch(text);
-      }}
-      onKeyDown={(e) => e.key === "Escape" && onCancel()}
-    >
-      <p className="small">
-        Find the right company for <strong>{row.label}</strong>. A LinkedIn URL or domain gives an exact match.
-      </p>
-      <div className="row gap wrap">
-        <input
-          className="input input-plain grow"
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          placeholder="https://www.linkedin.com/company/…  or  company.com  or a name"
-          aria-label={`New input for ${row.label}`}
-          autoFocus
-        />
-        <button className="btn btn-primary small" disabled={!detected}>
-          Search
-        </button>
-        <button type="button" className="btn btn-ghost small" onClick={onCancel}>
-          Cancel
-        </button>
-        <button type="button" className="link-btn small danger" onClick={onRemove}>
-          Remove from batch
-        </button>
-      </div>
-      {detected && <p className="hint">Searching by {detected.label}{detected.param !== "query" && <>: <code>{detected.value}</code></>}</p>}
-    </form>
   );
 }

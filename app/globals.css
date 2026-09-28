@@ -352,3 +352,29 @@ a.person-name:hover { color: var(--accent-ink); text-decoration: underline; }
 .icon-link-muted { color: var(--ink-3); }
 .icon-link-muted:hover { color: var(--accent-ink); opacity: 1; }
 .match-main .facts { margin-top: -2px; }
+
+/* Match picker */
+.row-picking td { background: #fbfaff; }
+.picker { display: flex; flex-direction: column; gap: 10px; padding: 4px 0; }
+.picker-head p { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.picker-step { font-size: 12px; font-weight: 700; color: #fff; background: var(--accent); padding: 2px 8px; border-radius: 999px; }
+.picker-group { font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--ink-3); font-weight: 700; margin-top: 2px; }
+.cands { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 8px; }
+.cand {
+  display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px; background: #fff; border: 1px solid var(--line);
+  border-radius: var(--radius-sm); cursor: pointer; height: 100%;
+}
+.cand:hover { border-color: var(--accent); }
+.cand-selected { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-tint); }
+.cand input[type="radio"] { accent-color: var(--accent); margin-top: 10px; flex: none; }
+.cand-main { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.cand-name { font-weight: 700; display: inline-flex; align-items: center; gap: 5px; flex-wrap: wrap; }
+.cand-current { font-size: 11px; font-weight: 700; color: var(--ink-3); text-transform: uppercase; letter-spacing: 0.06em; }
+.picker-search { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.picker-search .input-wrap { min-width: 240px; }
+.picker-actions { border-top: 1px solid var(--line); padding-top: 10px; }
+.review-banner {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 10px; background: var(--yellow-tint); color: var(--yellow-ink);
+  border-radius: var(--radius-sm); padding: 10px 12px; font-size: 14px;
+}
+.review-banner .btn { background: #fff; }
