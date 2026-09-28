@@ -15,7 +15,7 @@ import {
 } from "@/lib/notify";
 
 function usePrefs(): [NotifyPrefs, (p: NotifyPrefs) => void] {
-  const [prefs, set] = useState<NotifyPrefs>({ desktop: false, sound: false });
+  const [prefs, set] = useState<NotifyPrefs>({ desktop: false, sound: true });
   useEffect(() => {
     const sync = () => set(getPrefs());
     sync();

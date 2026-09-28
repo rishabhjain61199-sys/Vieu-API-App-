@@ -378,3 +378,44 @@ a.person-name:hover { color: var(--accent-ink); text-decoration: underline; }
   border-radius: var(--radius-sm); padding: 10px 12px; font-size: 14px;
 }
 .review-banner .btn { background: #fff; }
+
+/* Spreadsheet-style batch table: bigger type, gridlines, sticky header, selection */
+.table { font-size: 16px; }
+.table th { font-size: 13px; padding: 0; position: sticky; top: 0; z-index: 2; }
+.table td { padding: 12px 14px; border-right: 1px solid #efeff2; }
+.table td:last-child { border-right: 0; }
+.table tbody tr:nth-child(even):not(.row-review):not(.row-selected):not(.row-edit) td { background: #fcfcfd; }
+.table tbody tr:hover:not(.row-edit) td { background: #f7f5ff; }
+.table .cell-input .small, .table .muted.small { font-size: 14px; }
+.table .badge { font-size: 14px; padding: 4px 11px; }
+.table .facts { font-size: 14px; }
+.table .review { font-size: 13px; }
+.table .review .link-btn { font-size: 13px; }
+.table-scroll { max-height: 72vh; overflow: auto; }
+.th-sort {
+  display: inline-flex; align-items: center; gap: 6px; width: 100%; padding: 12px 14px; background: none; border: 0;
+  font: inherit; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--ink-3); cursor: pointer; text-align: left;
+}
+.th-sort:hover, .th-sort-active { color: var(--ink); }
+.num .th-sort { justify-content: flex-end; }
+.th-arrow { display: inline-flex; opacity: 0.6; }
+.th-sort-active .th-arrow { opacity: 1; color: var(--accent); }
+.col-check { width: 44px; text-align: center; padding-left: 14px !important; padding-right: 6px !important; }
+.table th.col-check { padding: 12px 6px 12px 14px; }
+.col-check input { width: 17px; height: 17px; accent-color: var(--accent); cursor: pointer; vertical-align: middle; }
+.table tr.row-selected td { background: var(--accent-tint); }
+.empty-cell { text-align: center; color: var(--ink-2); padding: 28px !important; }
+.table-toolbar { padding: 14px 16px 10px; border-bottom: 1px solid var(--line); }
+.table-toolbar .chip { font-size: 14px; }
+.bulk-bar {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 10px 16px; background: var(--accent-tint);
+  border-bottom: 1px solid #ddd3ff; font-size: 15px; position: sticky; top: 0; z-index: 3;
+}
+.bulk-bar .btn-ghost { background: #fff; }
+
+/* Slightly larger secondary text across the app */
+.small { font-size: 15px; }
+.hint { font-size: 14px; }
+.badge { font-size: 14px; }
+.facts { font-size: 14px; }
+.person-title, .person-loc { font-size: 15px; }

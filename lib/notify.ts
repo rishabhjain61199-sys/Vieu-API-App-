@@ -13,9 +13,10 @@ const BASE_TITLE = "Stakeholder Lookup";
 export function getPrefs(): NotifyPrefs {
   try {
     const p = JSON.parse(localStorage.getItem(PREF_KEY) || "{}");
-    return { desktop: !!p.desktop && permission() === "granted", sound: !!p.sound };
+    // Sound is on until someone turns it off; desktop needs the browser's permission.
+    return { desktop: !!p.desktop && permission() === "granted", sound: p.sound ?? true };
   } catch {
-    return { desktop: false, sound: false };
+    return { desktop: false, sound: true };
   }
 }
 

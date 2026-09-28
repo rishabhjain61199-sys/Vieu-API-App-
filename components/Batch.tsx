@@ -1,7 +1,7 @@
 "use client";
 
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeft, BadgeCheck, Download, FileUp, ListChecks, RefreshCw, TriangleAlert, Upload } from "lucide-react";
+import { ArrowDown, ArrowLeft, ArrowUp, BadgeCheck, ChevronsUpDown, Download, FileUp, ListChecks, RefreshCw, TriangleAlert, Upload } from "lucide-react";
 import { ApiError, formatDuration, isAbort, vieu } from "@/lib/api";
 import { downloadFile, MAX_BATCH_ROWS, slugify, TEMPLATE_CSV, toBatchInputs, today, toCsv } from "@/lib/csv";
 import { PARAM_LABEL, SEARCH_PARAMS, type Detected } from "@/lib/detect";
@@ -61,7 +61,8 @@ export function Batch({
   const [text, setText] = useState("");
   const [importError, setImportError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const [confirming, setConfirming] = useState(false);
+  // Rows waiting for the "Generate for N?" confirmation (all eligible, or a bulk selection).
+  const [confirmTargets, setConfirmTargets] = useState<BatchRow[] | null>(null);
   const [dragging, setDragging] = useState(false);
   const [tickN, setTickN] = useState(0);
   const rowsRef = useRef<BatchRow[]>([]);
@@ -157,7 +158,7 @@ export function Batch({
   }
 
   async function generate(targets: BatchRow[]) {
-    setConfirming(false);
+    setConfirmTargets(null);
     await pool(targets, CONCURRENCY, async (row) => {
       patch(row.id, { stage: "generating", error: undefined });
       try {
@@ -343,7 +344,8 @@ export function Batch({
   }
 
   const eligible = rows.filter((r) => r.company && !r.ambiguous && (r.stage === "not_started" || r.stage === "failed"));
-  const willCreate = eligible.filter((r) => !r.accountId).length;
+  const targets = confirmTargets ?? [];
+  const willCreate = targets.filter((r) => !r.accountId).length;
   const needsReview = rows.filter((r) => r.ambiguous && (r.stage === "not_started" || r.stage === "failed")).length;
 
   if (!rows.length) {
@@ -416,7 +418,14 @@ export function Batch({
         live={{
           eligible: eligible.length,
           needsReview,
-          onGenerate: () => setConfirming(true),
+          onGenerate: (only) => setConfirmTargets(only ?? eligible),
+          onConfirmMany: (ids) => ids.forEach((id) => patch(id, { ambiguous: false, manual: true })),
+          onRemoveMany: (ids) =>
+            setRows((prev) => {
+              const out = prev.filter((x) => !ids.includes(x.id));
+              rowsRef.current = out;
+              return out;
+            }),
           onCheckAgain: () =>
             rows.filter((r) => r.stage === "timeout").forEach((r) => patch(r.id, { stage: "polling", watchStart: Date.now(), checkedAt: 0 })),
           onRetry: (r) => (r.company ? checkRow(r) : resolveRow(r)),
@@ -457,14 +466,14 @@ export function Batch({
         }}
       />
       <ConfirmDialog
-        open={confirming}
-        title={`Generate stakeholders for ${eligible.length} ${eligible.length === 1 ? "company" : "companies"}?`}
+        open={!!confirmTargets}
+        title={`Generate stakeholders for ${targets.length} ${targets.length === 1 ? "company" : "companies"}?`}
         confirmLabel="Generate"
         onConfirm={() => {
           primeAudio();
-          generate(eligible);
+          generate(targets);
         }}
-        onCancel={() => setConfirming(false)}
+        onCancel={() => setConfirmTargets(null)}
       >
         <p>This writes to the tenant your key belongs to. It starts power pod seeding for each of them.</p>
         {willCreate > 0 && (
@@ -472,7 +481,9 @@ export function Batch({
             {willCreate === 1 ? "1 of them has no account yet, so one will be created." : `${willCreate} of them have no account yet, so an account will be created for each.`}
           </p>
         )}
-        {needsReview > 0 && <p className="warn-text">{needsReview} rows with an uncertain match are skipped until you confirm them.</p>}
+        {needsReview > 0 && targets === eligible && (
+          <p className="warn-text">{needsReview} rows with an uncertain match are skipped until you confirm them.</p>
+        )}
         <p className="muted small">Each usually takes under 10 minutes. They run in parallel and you can watch them here.</p>
         <NotifyOptions />
       </ConfirmDialog>
@@ -502,10 +513,81 @@ const STAGE_BADGE: Record<BatchRow["stage"], { label: string; tone: string }> = 
   not_started: { label: OUTCOME_LABEL.not_generated, tone: OUTCOME_TONE.not_generated },
 };
 
+type FilterKey = "all" | "review" | "not_generated" | "generating" | "has_people" | "failed" | "no_match";
+
+const FILTERS: Record<FilterKey, { label: string; test: (r: BatchRow) => boolean }> = {
+  all: { label: "All", test: () => true },
+  review: { label: "Needs review", test: (r) => r.ambiguous },
+  not_generated: { label: "Not generated", test: (r) => r.stage === "not_started" },
+  generating: { label: "Generating", test: (r) => ["generating", "polling", "timeout"].includes(r.stage) },
+  has_people: { label: "Has stakeholders", test: (r) => r.stakeholders.length > 0 },
+  failed: { label: "Failed", test: (r) => r.stage === "failed" || r.stage === "error" },
+  no_match: { label: "No match", test: (r) => r.stage === "no_match" },
+};
+
+type SortKey = "input" | "company" | "account" | "status" | "people";
+
+const STATUS_ORDER: Record<BatchRow["stage"], number> = {
+  no_match: 0, error: 1, failed: 2, not_started: 3, queued: 4, resolving: 4, checking: 4,
+  generating: 5, polling: 5, timeout: 6, completed: 7, seeded: 8,
+};
+
+function sortRows(rows: BatchRow[], sort: { key: SortKey; dir: 1 | -1 } | null) {
+  if (!sort) return rows;
+  const val = (r: BatchRow): string | number => {
+    switch (sort.key) {
+      case "input":
+        return r.label.toLowerCase();
+      case "company":
+        return (r.company?.name ?? "\uffff").toLowerCase();
+      case "account":
+        return r.created ? 0 : r.accountId ? 1 : r.company ? 2 : 3;
+      case "status":
+        return STATUS_ORDER[r.stage];
+      case "people":
+        return r.stakeholders.length;
+    }
+  };
+  return [...rows].sort((a, b) => {
+    const x = val(a);
+    const y = val(b);
+    return (x < y ? -1 : x > y ? 1 : 0) * sort.dir;
+  });
+}
+
+function SortTh({
+  label,
+  k,
+  sort,
+  onSort,
+  className,
+}: {
+  label: string;
+  k: SortKey;
+  sort: { key: SortKey; dir: 1 | -1 } | null;
+  onSort: (k: SortKey) => void;
+  className?: string;
+}) {
+  const active = sort?.key === k;
+  return (
+    <th className={className} aria-sort={active ? (sort!.dir === 1 ? "ascending" : "descending") : "none"}>
+      <button className={`th-sort ${active ? "th-sort-active" : ""}`} onClick={() => onSort(k)}>
+        {label}
+        <span className="th-arrow" aria-hidden="true">
+          {active ? sort!.dir === 1 ? <ArrowUp size={13} /> : <ArrowDown size={13} /> : <ChevronsUpDown size={13} />}
+        </span>
+      </button>
+    </th>
+  );
+}
+
 type LiveActions = {
   eligible: number;
   needsReview: number;
-  onGenerate: () => void;
+  /** Open the generate confirmation for these rows (default: every eligible row). */
+  onGenerate: (only?: BatchRow[]) => void;
+  onConfirmMany: (ids: string[]) => void;
+  onRemoveMany: (ids: string[]) => void;
   onCheckAgain: () => void;
   onRetry: (r: BatchRow) => void;
   onGenerateRow: (r: BatchRow) => void;
@@ -533,6 +615,10 @@ export function BatchView({
 }) {
   const [detailId, setDetailId] = useState<string | null>(null);
   const [pickerId, setPickerId] = useState<string | null>(null);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [lastClicked, setLastClicked] = useState<string | null>(null);
+  const [filter, setFilter] = useState<FilterKey>("all");
+  const [sort, setSort] = useState<{ key: SortKey; dir: 1 | -1 } | null>(null);
   // Review mode: total fixed when it starts, so the counter reads "2 of 3" as rows get confirmed.
   const [review, setReview] = useState<{ total: number; done: number } | null>(null);
   const canEditRow = (r: BatchRow) => !!live && !WATCHING.has(r.stage) && !BUSY.has(r.stage);
@@ -589,15 +675,52 @@ export function BatchView({
     );
   }
 
-  function exportAll() {
+  // A filter that has emptied out (e.g. all "Needs review" rows confirmed) falls back to All.
+  const activeFilter: FilterKey = filter !== "all" && !rows.some(FILTERS[filter].test) ? "all" : filter;
+  const visible = sortRows(rows.filter(FILTERS[activeFilter].test), sort);
+  const selectedRows = rows.filter((r) => selected.has(r.id));
+  const selConfirmable = selectedRows.filter((r) => r.ambiguous && canEditRow(r));
+  const selGeneratable = selectedRows.filter((r) => r.company && !r.ambiguous && (r.stage === "not_started" || r.stage === "failed"));
+  const selRemovable = selectedRows.filter(canEditRow);
+  const allVisibleSelected = visible.length > 0 && visible.every((r) => selected.has(r.id));
+  const someVisibleSelected = visible.some((r) => selected.has(r.id));
+
+  /** Checkbox click; shift-click selects the range from the last clicked row, like a spreadsheet. */
+  function toggleRow(id: string, shift: boolean) {
+    const next = new Set(selected);
+    const on = !next.has(id);
+    if (shift && lastClicked) {
+      const a = visible.findIndex((r) => r.id === lastClicked);
+      const b = visible.findIndex((r) => r.id === id);
+      if (a >= 0 && b >= 0) for (const r of visible.slice(Math.min(a, b), Math.max(a, b) + 1)) on ? next.add(r.id) : next.delete(r.id);
+    } else on ? next.add(id) : next.delete(id);
+    setSelected(next);
+    setLastClicked(id);
+  }
+
+  function toggleAllVisible() {
+    const next = new Set(selected);
+    if (allVisibleSelected) visible.forEach((r) => next.delete(r.id));
+    else visible.forEach((r) => next.add(r.id));
+    setSelected(next);
+  }
+
+  const clearSelection = () => setSelected(new Set());
+
+  function sortBy(key: SortKey) {
+    setSort((cur) => (cur?.key === key ? (cur.dir === 1 ? { key, dir: -1 } : null) : { key, dir: 1 }));
+  }
+
+  function exportAll(subset: BatchRow[] = rows) {
     const lines: unknown[][] = [[...CSV_COLUMNS]];
-    for (const r of rows) {
+    for (const r of subset) {
       const rec = rowToRecord(r);
       if (!rec || !rec.stakeholders.length) continue;
       const { pods } = analyze(rec.stakeholders, { name: rec.company.name, domain: rec.domain });
       lines.push(...stakeholderCsvRows(pods, { company: rec.company.name, companyId: rec.company.companyId, accountId: rec.accountId ?? "", outcome: rec.outcome }));
     }
-    downloadFile(`batch_${slugify(name)}_stakeholders_${today()}.csv`, toCsv(lines));
+    const tag = subset === rows ? "" : `_${subset.length}_selected`;
+    downloadFile(`batch_${slugify(name)}${tag}_stakeholders_${today()}.csv`, toCsv(lines));
   }
 
   function exportSummary() {
@@ -677,7 +800,7 @@ export function BatchView({
 
         <div className="row gap wrap">
           {live && live.eligible > 0 && (
-            <button className="btn btn-primary" onClick={live.onGenerate}>
+            <button className="btn btn-primary" onClick={() => live.onGenerate()}>
               Generate for {live.eligible}
             </button>
           )}
@@ -686,7 +809,7 @@ export function BatchView({
               <RefreshCw size={16} /> Check again ({timeouts})
             </button>
           )}
-          <button className="btn btn-ghost" onClick={exportAll} disabled={!totalPeople}>
+          <button className="btn btn-ghost" onClick={() => exportAll()} disabled={!totalPeople}>
             <Download size={16} /> Export all stakeholders
           </button>
           <button className="btn btn-ghost" onClick={exportSummary}>
@@ -702,6 +825,15 @@ export function BatchView({
             <button
               className="btn btn-ghost small"
               onClick={() => {
+                setFilter("review");
+                setSelected(new Set(reviewable.map((r) => r.id)));
+              }}
+            >
+              Select all {reviewable.length}
+            </button>
+            <button
+              className="btn btn-ghost small"
+              onClick={() => {
                 setReview({ total: reviewable.length, done: 0 });
                 openPicker(reviewable[0].id);
               }}
@@ -713,20 +845,88 @@ export function BatchView({
       </section>
 
       <section className="card table-card">
+        <div className="table-toolbar">
+          <div className="chips" role="group" aria-label="Filter rows">
+            {(Object.keys(FILTERS) as FilterKey[]).map((k) => {
+              const n = k === "all" ? rows.length : rows.filter(FILTERS[k].test).length;
+              if (k !== "all" && !n) return null;
+              return (
+                <button key={k} className={`chip ${activeFilter === k ? "chip-active" : ""}`} aria-pressed={activeFilter === k} onClick={() => setFilter(k)}>
+                  {FILTERS[k].label} <strong>{n}</strong>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        {selected.size > 0 && (
+          <div className="bulk-bar" role="toolbar" aria-label="Bulk actions">
+            <span className="strong">{selected.size} selected</span>
+            {live && selConfirmable.length > 0 && (
+              <button className="btn btn-ghost small" onClick={() => live.onConfirmMany(selConfirmable.map((r) => r.id))}>
+                Confirm {selConfirmable.length} {selConfirmable.length === 1 ? "match" : "matches"}
+              </button>
+            )}
+            {live && selGeneratable.length > 0 && (
+              <button className="btn btn-primary small" onClick={() => live.onGenerate(selGeneratable)}>
+                Generate {selGeneratable.length}
+              </button>
+            )}
+            {selectedRows.some((r) => r.stakeholders.length) && (
+              <button className="btn btn-ghost small" onClick={() => exportAll(selectedRows)}>
+                <Download size={14} /> Export selected
+              </button>
+            )}
+            {live && selRemovable.length > 0 && (
+              <button
+                className="link-btn small danger"
+                onClick={() => {
+                  live.onRemoveMany(selRemovable.map((r) => r.id));
+                  clearSelection();
+                }}
+              >
+                Remove {selRemovable.length}
+              </button>
+            )}
+            <span className="grow" />
+            <button className="link-btn small" onClick={clearSelection}>
+              Clear selection
+            </button>
+          </div>
+        )}
+
         <div className="table-scroll">
           <table className="table">
             <thead>
               <tr>
-                <th>Input</th>
-                <th>Matched company</th>
-                <th>Account</th>
-                <th>Stakeholders</th>
-                <th className="num">People</th>
+                <th className="col-check">
+                  <input
+                    type="checkbox"
+                    aria-label="Select all visible rows"
+                    checked={allVisibleSelected}
+                    ref={(el) => {
+                      if (el) el.indeterminate = !allVisibleSelected && someVisibleSelected;
+                    }}
+                    onChange={toggleAllVisible}
+                  />
+                </th>
+                <SortTh label="Input" k="input" sort={sort} onSort={sortBy} />
+                <SortTh label="Matched company" k="company" sort={sort} onSort={sortBy} />
+                <SortTh label="Account" k="account" sort={sort} onSort={sortBy} />
+                <SortTh label="Stakeholders" k="status" sort={sort} onSort={sortBy} />
+                <SortTh label="People" k="people" sort={sort} onSort={sortBy} className="num" />
                 <th />
               </tr>
             </thead>
             <tbody>
-              {rows.map((r) => {
+              {visible.length === 0 && (
+                <tr>
+                  <td colSpan={7} className="empty-cell">
+                    No rows match this filter.
+                  </td>
+                </tr>
+              )}
+              {visible.map((r) => {
                 const badge = STAGE_BADGE[r.stage];
                 const canView = r.stakeholders.length > 0;
                 const canEdit = canEditRow(r);
@@ -734,7 +934,19 @@ export function BatchView({
                 const reviewStep = review && picking ? { index: review.done + 1, total: Math.max(review.total, review.done + 1) } : undefined;
                 return (
                   <Fragment key={r.id}>
-                    <tr id={`row-${r.id}`} className={`${r.ambiguous ? "row-review" : ""} ${picking ? "row-picking" : ""}`}>
+                    <tr
+                      id={`row-${r.id}`}
+                      className={`${r.ambiguous ? "row-review" : ""} ${picking ? "row-picking" : ""} ${selected.has(r.id) ? "row-selected" : ""}`}
+                    >
+                      <td className="col-check">
+                        <input
+                          type="checkbox"
+                          aria-label={`Select ${r.label}`}
+                          checked={selected.has(r.id)}
+                          onChange={() => {}}
+                          onClick={(e) => toggleRow(r.id, e.shiftKey)}
+                        />
+                      </td>
                       <td>
                         <div className="cell-input">
                           <span className="truncate" title={r.label}>{r.label}</span>
@@ -819,7 +1031,7 @@ export function BatchView({
                     </tr>
                     {picking && live && (
                       <tr className="row-edit">
-                        <td colSpan={6}>
+                        <td colSpan={7}>
                           <MatchPicker
                             row={r}
                             review={reviewStep}
