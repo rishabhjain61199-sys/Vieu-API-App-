@@ -26,7 +26,8 @@ export function Pods({
   const visible = pods
     .map((pod) => ({ ...pod, shown: pod.people.filter((p) => matches(p, q) && (!flaggedOnly || p.flags.length)) }))
     .filter((pod) => !filtering || pod.shown.length);
-  const allOpen = visible.every((p) => open.has(p.name));
+  const withPeople = visible.filter((p) => p.people.length);
+  const allOpen = withPeople.every((p) => open.has(p.name));
 
   function toggle(name: string) {
     const next = new Set(open);
@@ -46,7 +47,7 @@ export function Pods({
         <label className="toggle">
           <input type="checkbox" checked={flaggedOnly} onChange={(e) => setFlaggedOnly(e.target.checked)} /> Flagged only
         </label>
-        <button className="btn btn-ghost small" onClick={() => onOpenChange(allOpen ? new Set() : new Set(visible.map((p) => p.name)))}>
+        <button className="btn btn-ghost small" onClick={() => onOpenChange(allOpen ? new Set() : new Set(withPeople.map((p) => p.name)))}>
           {allOpen ? "Collapse all" : "Expand all"}
         </button>
       </div>
@@ -55,6 +56,18 @@ export function Pods({
 
       <div className="pods">
         {visible.map((pod) => {
+          if (!pod.people.length) {
+            return (
+              <div className="pod pod-empty" key={pod.name} id={`pod-${encodeURIComponent(pod.name)}`}>
+                <div className="pod-head pod-head-empty">
+                  <span className="chev-spacer" aria-hidden="true" />
+                  <span className="pod-name">{pod.name}</span>
+                  <span className="pod-count">0</span>
+                  <span className="muted small">No stakeholders generated for this pod</span>
+                </div>
+              </div>
+            );
+          }
           const isOpen = filtering || open.has(pod.name);
           return (
             <div className="pod" key={pod.name} id={`pod-${encodeURIComponent(pod.name)}`}>

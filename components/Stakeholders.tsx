@@ -101,11 +101,13 @@ export function Stakeholders({ currentTenant, focus }: { currentTenant?: string;
     return [...m.entries()].sort((a, b) => a[1].name.localeCompare(b[1].name));
   }, [inTenant]);
   const inCompany = inTenant.filter((r) => company === "all" || r.companyId === company);
+  // Every pod seen for the tenant (pods are tenant-wide), with 0 where this selection has none.
   const pods = useMemo(() => {
     const m = new Map<string, number>();
+    for (const r of inTenant) if (r.person.pod !== "Unassigned") m.set(r.person.pod, 0);
     for (const r of inCompany) m.set(r.person.pod, (m.get(r.person.pod) ?? 0) + 1);
-    return [...m.entries()].sort((a, b) => b[1] - a[1]);
-  }, [inCompany]);
+    return [...m.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  }, [inTenant, inCompany]);
 
   const needle = q.trim().toLowerCase();
   const filtered = inCompany.filter(

@@ -94,6 +94,8 @@ const OFF_TARGET_TITLE =
 export function analyze(
   raws: Record<string, unknown>[],
   company: { name: string; domain?: string },
+  /** Every pod known for the tenant; any this account lacks are listed with 0 people. */
+  allPods: string[] = [],
 ): { people: Stakeholder[]; pods: Pod[]; flaggedCount: number } {
   const people = raws.map(normalize);
   const targets = [company.name, company.domain?.split(".")[0] ?? ""].filter(Boolean);
@@ -132,6 +134,7 @@ export function analyze(
 
   const podMap = new Map<string, Stakeholder[]>();
   for (const p of people) podMap.set(p.pod, [...(podMap.get(p.pod) ?? []), p]);
+  for (const name of allPods) if (!podMap.has(name)) podMap.set(name, []);
   const pods = [...podMap.entries()]
     .map(([name, list]) => ({ name, people: list, flagged: list.filter((p) => p.flags.length).length }))
     .sort((a, b) => b.people.length - a.people.length || a.name.localeCompare(b.name));

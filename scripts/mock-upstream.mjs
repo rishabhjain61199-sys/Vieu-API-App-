@@ -57,7 +57,8 @@ function view(slug) {
     accountId: c.accountId, companyId: c.companyId, generated,
     seedingStatus: s.status === "none" ? "not_started" : s.status,
     ...(generated ? {} : { message: "Power pods have not been generated for this account" }),
-    stakeholders: generated ? people(slug, c.name) : [],
+    // McDonald's has no one in Procurement, to exercise empty pods.
+    stakeholders: generated ? people(slug, c.name).filter((p) => !(slug === "mcdcorp" && p.swimlane === "Procurement")) : [],
   };
 }
 

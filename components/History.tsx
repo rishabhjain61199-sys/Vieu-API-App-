@@ -96,6 +96,7 @@ export function History({
         {open.kind === "lookup" ? (
           <RecordView
             record={open.data}
+            tenant={open.tenant}
             actions={
               <button
                 className="btn btn-ghost"

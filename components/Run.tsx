@@ -6,6 +6,7 @@ import { ApiError, formatDuration, isAbort, sleep, vieu } from "@/lib/api";
 import { analyze, downloadStakeholderCsv } from "@/lib/stakeholders";
 import { newId, saveEntry } from "@/lib/history";
 import { cleanDomain } from "@/lib/detect";
+import { useTenantPods } from "@/lib/pods";
 import { announce, primeAudio, setGenerating } from "@/lib/notify";
 import {
   idParam,
@@ -231,9 +232,13 @@ export function Run({
 
   // Prefer the domain the user typed; the profile field can be a short link.
   const domain = domainHint || cleanDomain(profile?.domain);
+  const podsFor = useTenantPods(tenant);
+  const allPods = podsFor(resp?.stakeholders ?? []);
+  const podKey = allPods.join("|");
   const analysis = useMemo(
-    () => (resp?.stakeholders?.length ? analyze(resp.stakeholders, { name: company.name, domain }) : null),
-    [resp, company.name, domain],
+    () => (resp?.stakeholders?.length ? analyze(resp.stakeholders, { name: company.name, domain }, allPods) : null),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [resp, company.name, domain, podKey],
   );
   const pods = analysis?.pods ?? [];
   const nav = usePodNav(pods);

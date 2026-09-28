@@ -4,6 +4,7 @@ import { useMemo, useState, type ReactNode } from "react";
 import { Copy, Download } from "lucide-react";
 import { formatDuration } from "@/lib/api";
 import { analyze, downloadStakeholderCsv, type Pod } from "@/lib/stakeholders";
+import { useTenantPods } from "@/lib/pods";
 import { OUTCOME_LABEL, type Company, type Outcome, type RunRecord } from "@/lib/types";
 import { Badge, CompanyLogo, Spinner } from "./ui";
 import { Pods } from "./Pods";
@@ -22,7 +23,8 @@ export type Analysis = ReturnType<typeof analyze>;
 /** Open/closed state for pod sections, plus jumping to one from a chip. */
 export function usePodNav(pods: Pod[]) {
   const [open, setOpen] = useState<Set<string> | null>(null);
-  const openSet = open ?? new Set(pods[0] ? [pods[0].name] : []);
+  const firstWithPeople = pods.find((p) => p.people.length);
+  const openSet = open ?? new Set(firstWithPeople ? [firstWithPeople.name] : []);
   function jump(name: string) {
     setOpen(new Set([...openSet, name]));
     requestAnimationFrame(() =>
@@ -138,7 +140,12 @@ export function Summary({
         </div>
         <div>
           <dt>Power pods</dt>
-          <dd className="kpi">{pods.length}</dd>
+          <dd className="kpi">
+            {pods.length}
+            {pods.some((p) => !p.people.length) && (
+              <span className="kpi-sub">{pods.filter((p) => !p.people.length).length} empty</span>
+            )}
+          </dd>
         </div>
         {analysis && analysis.flaggedCount > 0 && (
           <div>
@@ -151,7 +158,12 @@ export function Summary({
       {pods.length > 0 && (
         <div className="chips">
           {pods.map((p) => (
-            <button key={p.name} className="chip" onClick={() => onJumpPod?.(p.name)}>
+            <button
+              key={p.name}
+              className={`chip ${p.people.length ? "" : "chip-zero"}`}
+              onClick={() => onJumpPod?.(p.name)}
+              title={p.people.length ? undefined : "No stakeholders were generated for this pod"}
+            >
               {p.name} <strong>{p.people.length}</strong>
             </button>
           ))}
@@ -164,11 +176,17 @@ export function Summary({
 }
 
 /** A saved or batch result: summary card plus pods, no live API calls. */
-export function RecordView({ record, actions }: { record: RunRecord; actions?: ReactNode }) {
+export function RecordView({ record, actions, tenant }: { record: RunRecord; actions?: ReactNode; tenant?: string }) {
+  const podsFor = useTenantPods(tenant);
+  const allPods = podsFor(record.stakeholders);
+  const podKey = allPods.join("|");
   const analysis = useMemo(
     () =>
-      record.stakeholders.length ? analyze(record.stakeholders, { name: record.company.name, domain: record.domain }) : null,
-    [record],
+      record.stakeholders.length
+        ? analyze(record.stakeholders, { name: record.company.name, domain: record.domain }, allPods)
+        : null,
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [record, podKey],
   );
   const pods = analysis?.pods ?? [];
   const nav = usePodNav(pods);

@@ -441,3 +441,13 @@ a.person-name:hover { color: var(--accent-ink); text-decoration: underline; }
 .cell-input { min-width: 150px; }
 .cell-input .small { white-space: nowrap; }
 .cell-status { display: inline-flex; align-items: center; gap: 8px; flex-wrap: nowrap; white-space: nowrap; }
+
+/* Empty pods (0 stakeholders) stay visible */
+.chip-zero { color: var(--ink-3); border-style: dashed; }
+.chip-zero strong { color: var(--ink-3); }
+.kpi-sub { display: block; font-size: 13px; font-weight: 400; color: var(--ink-3); margin-top: 4px; }
+.pod-head-empty { cursor: default; background: #fafafb; }
+.pod-head-empty:hover { background: #fafafb; }
+.pod-empty .pod-name { color: var(--ink-2); }
+.pod-empty .pod-count { color: var(--ink-3); }
+.chev-spacer { width: 18px; flex: none; }
