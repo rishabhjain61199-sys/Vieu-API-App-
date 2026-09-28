@@ -73,9 +73,23 @@ export type RunRecord = {
   outcome: Outcome;
   genMs: number | null;
   joined: boolean;
+  /** When generation started (kept so an in-progress lookup can be resumed). */
+  genStart?: number | null;
+  /** Generation time is an upper bound (the tab was closed while it ran). */
+  genApprox?: boolean;
   stakeholders: Record<string, unknown>[];
   message?: string;
   checkedAt: number;
+};
+
+/** Passed to a lookup re-opened from History so it continues the same entry. */
+export type LookupResume = {
+  entryId: string;
+  createdAt: number;
+  genStart: number | null;
+  created: boolean;
+  joined: boolean;
+  watching: boolean;
 };
 
 export type RowStage =

@@ -43,10 +43,12 @@ export type ResumeBatch = { id: string; createdAt: number; record: BatchRecord }
 
 export function Batch({
   apiKey,
+  tenant,
   onKeyInvalid,
   resume,
 }: {
   apiKey: string;
+  tenant?: string;
   onKeyInvalid: (msg: string) => void;
   resume: ResumeBatch | null;
 }) {
@@ -236,12 +238,12 @@ export function Batch({
     if (!rows.length) return;
     const t = setTimeout(() => {
       saveEntry({
-        id: entry.current.id, kind: "batch", title: name, createdAt: entry.current.createdAt,
+        id: entry.current.id, kind: "batch", title: name, tenant, createdAt: entry.current.createdAt,
         updatedAt: Date.now(), data: { name, rows },
       });
     }, 800);
     return () => clearTimeout(t);
-  }, [rows, name]);
+  }, [rows, name, tenant]);
 
   // Resume a batch opened from History: re-check anything that wasn't final.
   useEffect(() => {

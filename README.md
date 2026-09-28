@@ -8,7 +8,15 @@ A small Next.js app. Paste a Vieu Partner API key (the key decides the tenant), 
 | --- | --- |
 | **Lookup** | Search by name, domain, email, LinkedIn URL, company id or account id. Pick the right match (every match's seeding status is checked in parallel). Summary card, pods, data-quality flags, CSV export. |
 | **Batch** | Upload a CSV or paste a list (up to 250). Columns such as `name`, `domain`, `website`, `linkedin_url`, `company_id`, `account_id` are detected automatically. Rows resolve and check in parallel (5 at a time). Rows matched by name only against several candidates are marked **Check match**. One confirmation generates for every eligible row, then they're all polled together. Exports: all stakeholders, plus a one-row-per-company summary. |
-| **History** | Past lookups and batches, stored in this browser's IndexedDB. Reopen, re-export, **Run again**, or **Resume and re-check** a batch that was still generating. Saving can be turned off, and history can be cleared. The API key is never stored. |
+| **History** | Past lookups and batches, stored in this browser's IndexedDB and saved as soon as generation starts, so a closed tab can pick up where it left off. Reopen, re-export, **Run again**, or **Resume and re-check** anything still generating. Entries are tagged with the tenant and can be filtered by it. Saving can be turned off, and history can be cleared. The API key is never stored. |
+
+## Tenant detection
+
+The Partner API has no "who am I" endpoint, so when a key is pasted the app calls `GET /introductions?pageSize=50` once. The most common point-of-contact email domain (users inside the key's tenant) becomes the tenant name, e.g. `vieu.com`. Several keys for the same tenant resolve to the same name. If the key lacks `introduction:read-write`, or the tenant has no introductions, the tenant shows as "unknown" and everything else still works. The same call rejects an invalid key right away. Re-running a History entry with a key for a different tenant asks for confirmation first. Two tenants at once means two browser tabs.
+
+## Notifications
+
+Opt in from the Generate confirmation (or the "Generating…" panel): a desktop notification and/or a chime when a lookup finishes or a whole batch finishes. The tab title and icon always show `(n) Generating` while seeds run, and `✓ Done` if you were away when they finished. Everything runs in the tab, so the tab must stay open. Generation itself keeps running in Vieu if the tab closes.
 
 ## Flow per company
 
@@ -69,6 +77,7 @@ With the mock, the key `bad` returns 401 and `noscope` returns 403. Any other ke
 ```
 app/api/_lib/proxy.ts            single-call proxy, key handling, param allow-list
 app/api/accounts/*/route.ts      search, stakeholders, stakeholders/generate, profile
+app/api/introductions/route.ts   tenant detection only
 app/page.tsx                     tabs + key state
 components/Run.tsx               single lookup state machine + polling
 components/Batch.tsx             batch import, parallel resolve/check/generate/poll, BatchView
@@ -76,6 +85,8 @@ components/History.tsx           saved runs
 lib/stakeholders.ts              normalize, flags, pod grouping, CSV rows
 lib/csv.ts / lib/detect.ts       CSV parse, column mapping, input detection
 lib/history.ts                   IndexedDB store (results only)
+lib/tenant.ts                    infer the key's tenant
+lib/notify.ts                    desktop notification, chime, tab title/icon
 scripts/mock-upstream.mjs        local mock of the Partner API
 scripts/smoke.mjs                read-only live check
 ```

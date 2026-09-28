@@ -1,6 +1,8 @@
 // Local stand-in for the Vieu Partner API, used to exercise every UI branch.
 // Run: npm run mock   then   VIEU_API_BASE=http://localhost:8787/api/v2 npm run dev
 // Keys: "bad" -> 401, "noscope" -> 403, anything else is accepted.
+// Tenant detection (/introductions): a key containing "acme" -> acme.com, "beta" -> beta.io,
+// "nointro" -> 403 on introductions only, "empty" -> no introductions, otherwise mocktenant.com.
 // Search terms: seeded | fresh | pending | failed | merck (two lookalikes)
 import http from "node:http";
 
@@ -77,6 +79,15 @@ http
     if (key === "noscope") return send(res, 403, { code: "ERR_FORBIDDEN", message: "Insufficient permissions", reason: "SCOPE_INSUFFICIENT" });
     const p = url.pathname.replace(/^\/api\/v2/, "");
     const q = url.searchParams;
+
+    if (p === "/introductions") {
+      if (key.includes("nointro")) return send(res, 403, { code: "ERR_FORBIDDEN", message: "Insufficient permissions", reason: "SCOPE_INSUFFICIENT" });
+      const domain = key.includes("acme") ? "acme.com" : key.includes("beta") ? "beta.io" : "mocktenant.com";
+      const introductions = key.includes("empty")
+        ? []
+        : [1, 2, 3].map((i) => ({ introductionId: `intro-${i}`, pointOfContact: i === 3 ? null : { name: "Alex", email: `alex${i}@${domain}` } }));
+      return send(res, 200, { introductions, page: 0, pageSize: 50, totalCount: introductions.length });
+    }
 
     if (p === "/accounts/search") {
       const term = (q.get("query") || q.get("webDomain") || "").toLowerCase();

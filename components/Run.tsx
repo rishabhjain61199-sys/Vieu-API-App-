@@ -13,6 +13,7 @@ import {
   type CompanyProfile,
   type GenerateResponse,
   type Ids,
+  type LookupResume,
   type Outcome,
   type StakeholdersResponse,
 } from "@/lib/types";
@@ -30,30 +31,36 @@ export function Run({
   apiKey,
   company,
   domainHint,
+  tenant,
+  resume,
   onKeyInvalid,
 }: {
   apiKey: string;
   company: Company;
   domainHint?: string;
+  tenant?: string;
+  resume?: LookupResume;
   onKeyInvalid: (msg: string) => void;
 }) {
   const [phase, setPhase] = useState<Phase>("loading");
   const [resp, setResp] = useState<StakeholdersResponse | null>(null);
   const [outcome, setOutcome] = useState<Outcome>("not_generated");
-  const [created, setCreated] = useState(false);
+  const [created, setCreated] = useState(resume?.created ?? false);
   const [noAccount, setNoAccount] = useState(false);
   const [error, setError] = useState<{ msg: string; status: number } | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [profile, setProfile] = useState<CompanyProfile | null>(null);
-  const [genStart, setGenStart] = useState<number | null>(null);
+  const [genStart, setGenStart] = useState<number | null>(resume?.genStart ?? null);
   const [genEnd, setGenEnd] = useState<number | null>(null);
-  const [joined, setJoined] = useState(false);
+  const [joined, setJoined] = useState(resume?.joined ?? false);
+  // Re-opened from History while it was still generating: time is an upper bound.
+  const [genApprox, setGenApprox] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   const [lastChecked, setLastChecked] = useState<number | null>(null);
-  const entryId = useRef(newId());
-  const createdAt = useRef(Date.now());
+  const entryId = useRef(resume?.entryId ?? newId());
+  const createdAt = useRef(resume?.createdAt ?? Date.now());
 
   const ids = useRef<Ids>({ accountId: company.accountId, companyId: company.companyId });
   const ac = useRef<AbortController>(new AbortController());
@@ -143,6 +150,16 @@ export function Run({
       .catch(() => {});
     try {
       const r = await fetchStakeholders();
+      // Re-opened from History mid-generation: a finished seed counts as newly generated.
+      const resuming = !!resume?.watching && (r.generated || r.seedingStatus === "pending" || r.seedingStatus === "completed");
+      if (resuming) {
+        if (settle(r, true)) {
+          setGenApprox(true);
+          return;
+        }
+        watch();
+        return;
+      }
       if (!settle(r, false)) {
         // Someone already triggered a seed: skip the POST and watch it.
         setJoined(true);
@@ -173,6 +190,7 @@ export function Run({
       setJoined(false);
       setGenStart(Date.now());
       setGenEnd(null);
+      setGenApprox(false);
       setNotice(null);
       watch();
     } catch (e) {
@@ -246,13 +264,14 @@ export function Run({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phase]);
 
-  // Save to history once the run reaches a state worth coming back to.
+  // Save to history as soon as generation starts (so a closed tab can resume it) and on every final state.
   useEffect(() => {
-    if (phase !== "results" && phase !== "timeout" && phase !== "failed") return;
+    if (!["polling", "results", "timeout", "failed"].includes(phase)) return;
     saveEntry({
       id: entryId.current,
       kind: "lookup",
       title: company.name,
+      tenant,
       createdAt: createdAt.current,
       updatedAt: Date.now(),
       data: {
@@ -265,13 +284,15 @@ export function Run({
         outcome,
         genMs,
         joined,
+        genStart,
+        genApprox,
         stakeholders: resp?.stakeholders ?? [],
         message: resp?.message,
         checkedAt: lastChecked ?? Date.now(),
       },
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [phase, outcome, resp, profile]);
+  }, [phase, outcome, resp, profile, tenant]);
 
   return (
     <>
@@ -285,6 +306,7 @@ export function Run({
         elapsed={phase === "polling" && genStart ? formatDuration(now - genStart) : undefined}
         genMs={genMs}
         joined={joined}
+        genApprox={genApprox}
         analysis={analysis}
         onJumpPod={nav.jump}
         notice={notice}

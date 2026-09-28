@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { ArrowLeft, RefreshCw, Trash2 } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { ArrowLeft, RefreshCw, Tag, Trash2 } from "lucide-react";
 import {
   clearEntries,
   deleteEntry,
@@ -11,7 +11,7 @@ import {
   setSavingEnabled,
   type HistoryEntry,
 } from "@/lib/history";
-import { OUTCOME_LABEL, STAGE_OUTCOME, type Company, type Outcome } from "@/lib/types";
+import { OUTCOME_LABEL, STAGE_OUTCOME, type Company, type LookupResume, type Outcome } from "@/lib/types";
 import { Badge, CompanyLogo, ConfirmDialog } from "./ui";
 import { OUTCOME_TONE, RecordView } from "./Summary";
 import { BatchView, type ResumeBatch } from "./Batch";
@@ -24,19 +24,28 @@ function ago(ts: number) {
   return new Date(ts).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
 }
 
+/** Tenant names group case- and space-insensitively; several keys can share one tenant. */
+const tenantKey = (t?: string) => (t ?? "").trim().replace(/\s+/g, " ").toLowerCase();
+
+const UNLABELED = "__unlabeled__";
+
 export function History({
   hasKey,
+  currentTenant,
   onResumeBatch,
   onRerunLookup,
 }: {
   hasKey: boolean;
+  currentTenant?: string;
   onResumeBatch: (b: ResumeBatch) => void;
-  onRerunLookup: (c: Company, domain?: string) => void;
+  onRerunLookup: (c: Company, domain?: string, resume?: LookupResume) => void;
 }) {
   const [entries, setEntries] = useState<HistoryEntry[] | null>(null);
   const [saving, setSaving] = useState(true);
   const [openId, setOpenId] = useState<string | null>(null);
   const [confirmClear, setConfirmClear] = useState(false);
+  const [filter, setFilter] = useState<string>("all");
+  const [pending, setPending] = useState<{ entry: HistoryEntry; run: () => void } | null>(null);
 
   useEffect(() => {
     const load = () => {
@@ -48,6 +57,27 @@ export function History({
     return () => window.removeEventListener(HISTORY_EVENT, load);
   }, []);
 
+  // One chip per tenant (first spelling seen wins), plus "No tenant" if any entry lacks one.
+  const tenants = useMemo(() => {
+    const m = new Map<string, string>();
+    let unlabeled = false;
+    for (const e of entries ?? []) {
+      if (!tenantKey(e.tenant)) unlabeled = true;
+      else if (!m.has(tenantKey(e.tenant))) m.set(tenantKey(e.tenant), e.tenant!.trim());
+    }
+    return { list: [...m.entries()], unlabeled };
+  }, [entries]);
+
+  const shown = (entries ?? []).filter((e) =>
+    filter === "all" ? true : filter === UNLABELED ? !tenantKey(e.tenant) : tenantKey(e.tenant) === filter,
+  );
+
+  /** Re-running with a key labeled for another tenant would query the wrong tenant: confirm first. */
+  function guarded(entry: HistoryEntry, run: () => void) {
+    if (tenantKey(entry.tenant) === tenantKey(currentTenant)) run();
+    else setPending({ entry, run });
+  }
+
   const open = entries?.find((e) => e.id === openId);
   const needKey = hasKey ? undefined : "Paste your key first";
 
@@ -57,12 +87,35 @@ export function History({
         <button className="btn btn-ghost small back" onClick={() => setOpenId(null)}>
           <ArrowLeft size={14} /> Back to history
         </button>
+        {open.tenant && (
+          <p className="muted small">
+            <Tag size={12} /> Tenant: <strong>{open.tenant}</strong>
+          </p>
+        )}
         {open.kind === "lookup" ? (
           <RecordView
             record={open.data}
             actions={
-              <button className="btn btn-ghost" disabled={!hasKey} title={needKey} onClick={() => onRerunLookup(open.data.company, open.data.domain)}>
-                <RefreshCw size={16} /> Run again
+              <button
+                className="btn btn-ghost"
+                disabled={!hasKey}
+                title={needKey}
+                onClick={() =>
+                  guarded(open, () => {
+                    const d = open.data;
+                    const inProgress = d.outcome === "seed_in_progress" || d.outcome === "still_generating";
+                    onRerunLookup(
+                      d.company,
+                      d.domain,
+                      inProgress
+                        ? { entryId: open.id, createdAt: open.createdAt, genStart: d.genStart ?? null, created: d.created, joined: d.joined, watching: true }
+                        : undefined,
+                    );
+                  })
+                }
+              >
+                <RefreshCw size={16} />{" "}
+                {open.data.outcome === "seed_in_progress" || open.data.outcome === "still_generating" ? "Resume and re-check" : "Run again"}
               </button>
             }
           />
@@ -75,13 +128,14 @@ export function History({
                 className="btn btn-ghost small"
                 disabled={!hasKey}
                 title={needKey}
-                onClick={() => onResumeBatch({ id: open.id, createdAt: open.createdAt, record: open.data })}
+                onClick={() => guarded(open, () => onResumeBatch({ id: open.id, createdAt: open.createdAt, record: open.data }))}
               >
                 <RefreshCw size={14} /> Resume and re-check
               </button>
             }
           />
         )}
+        <MismatchDialog pending={pending} currentTenant={currentTenant} onClose={() => setPending(null)} />
       </div>
     );
   }
@@ -112,11 +166,21 @@ export function History({
         )}
       </div>
 
-      {entries === null ? null : entries.length === 0 ? (
-        <p className="empty">Nothing yet. Lookups and batches show up here once they finish.</p>
+      {tenants.list.length > 0 && (
+        <div className="chips" role="group" aria-label="Filter by tenant">
+          {[["all", "All tenants"] as const, ...tenants.list, ...(tenants.unlabeled ? [[UNLABELED, "Unknown tenant"] as const] : [])].map(([k, label]) => (
+            <button key={k} className={`chip ${filter === k ? "chip-active" : ""}`} aria-pressed={filter === k} onClick={() => setFilter(k)}>
+              {k !== "all" && k !== UNLABELED && <Tag size={12} aria-hidden="true" />} {label}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {entries === null ? null : shown.length === 0 ? (
+        <p className="empty">{entries.length ? "Nothing for this tenant yet." : "Nothing yet. Lookups and batches show up here as soon as generation starts or a result comes back."}</p>
       ) : (
         <ul className="history">
-          {entries.map((e) => (
+          {shown.map((e) => (
             <li key={e.id} className="history-item">
               <button className="history-hit" onClick={() => setOpenId(e.id)}>
                 {e.kind === "lookup" ? (
@@ -130,6 +194,11 @@ export function History({
                   <span className="strong">{e.title}</span>
                   <span className="match-meta">
                     <Badge>{e.kind === "lookup" ? "Lookup" : "Batch"}</Badge>
+                    {e.tenant && (
+                      <Badge tone="accent">
+                        <Tag size={11} aria-hidden="true" /> {e.tenant}
+                      </Badge>
+                    )}
                     {e.kind === "lookup" ? (
                       <>
                         <Badge tone={OUTCOME_TONE[e.data.outcome]}>{OUTCOME_LABEL[e.data.outcome]}</Badge>
@@ -163,6 +232,39 @@ export function History({
         <p>This removes every saved lookup and batch from this browser. Nothing in Vieu is affected.</p>
       </ConfirmDialog>
     </section>
+  );
+}
+
+function MismatchDialog({
+  pending,
+  currentTenant,
+  onClose,
+}: {
+  pending: { entry: HistoryEntry; run: () => void } | null;
+  currentTenant?: string;
+  onClose: () => void;
+}) {
+  const saved = pending?.entry.tenant?.trim();
+  const now = currentTenant?.trim();
+  return (
+    <ConfirmDialog
+      open={!!pending}
+      title="Different tenant?"
+      confirmLabel="Use current key"
+      onConfirm={() => {
+        pending?.run();
+        onClose();
+      }}
+      onCancel={onClose}
+    >
+      <p>
+        This was run {saved ? <>for <strong>{saved}</strong></> : "with a key whose tenant couldn't be identified"}, but the key in this tab{" "}
+        {now ? <>is for <strong>{now}</strong></> : "has no identified tenant"}.
+      </p>
+      <p className="muted small">
+        Re-checking uses the key in this tab, so it reads that key&apos;s tenant. Continue only if they&apos;re the same tenant. To use another key, open a new tab.
+      </p>
+    </ConfirmDialog>
   );
 }
 

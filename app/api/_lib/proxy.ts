@@ -9,8 +9,10 @@ const MAX_PARAM_LEN = 500;
 type ProxyOptions = {
   path: string;
   method: "GET" | "POST";
-  /** Query params the upstream route accepts. Exactly one must be provided. */
-  oneOf: string[];
+  /** Identifier params the upstream route accepts. When given, exactly one must be provided. */
+  oneOf?: string[];
+  /** Extra params passed through when present (e.g. page, pageSize). */
+  optional?: string[];
 };
 
 function json(status: number, body: unknown, extra: Record<string, string> = {}) {
@@ -30,20 +32,21 @@ function scrub(text: string, key: string) {
  * The key arrives in the `x-vieu-key` header (never the URL, so it can't land in
  * access logs) and is never logged, stored, or included in any response.
  */
-export async function proxy(req: NextRequest, { path, method, oneOf }: ProxyOptions) {
+export async function proxy(req: NextRequest, { path, method, oneOf = [], optional = [] }: ProxyOptions) {
   const key = req.headers.get("x-vieu-key")?.trim();
   if (!key) return json(401, { message: "No API key provided", reason: "TOKEN_MISSING" });
 
+  const url = new URL(BASE + path);
   const provided = oneOf.filter((p) => req.nextUrl.searchParams.get(p)?.trim());
-  if (provided.length !== 1) {
+  if (oneOf.length && provided.length !== 1) {
     return json(400, { message: `Provide exactly one of: ${oneOf.join(", ")}` });
   }
-  const param = provided[0];
-  const value = req.nextUrl.searchParams.get(param)!.trim();
-  if (value.length > MAX_PARAM_LEN) return json(400, { message: `${param} is too long` });
-
-  const url = new URL(BASE + path);
-  url.searchParams.set(param, value);
+  for (const param of [...provided, ...optional]) {
+    const value = req.nextUrl.searchParams.get(param)?.trim();
+    if (!value) continue;
+    if (value.length > MAX_PARAM_LEN) return json(400, { message: `${param} is too long` });
+    url.searchParams.set(param, value);
+  }
 
   let upstream: Response;
   try {

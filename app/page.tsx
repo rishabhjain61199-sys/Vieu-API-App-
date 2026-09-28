@@ -1,8 +1,11 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { History as HistoryIcon, KeyRound, Layers, Search as SearchIcon, X } from "lucide-react";
-import type { Company } from "@/lib/types";
+import type { Company, LookupResume } from "@/lib/types";
+import { setTitleLabel } from "@/lib/notify";
+import { detectTenant, type Tenant } from "@/lib/tenant";
+import type { ApiError } from "@/lib/api";
 import { KeyGate } from "@/components/KeyGate";
 import { Search } from "@/components/Search";
 import { Run } from "@/components/Run";
@@ -10,7 +13,7 @@ import { Batch, type ResumeBatch } from "@/components/Batch";
 import { History } from "@/components/History";
 
 type Tab = "lookup" | "batch" | "history";
-type Selection = { company: Company; domainHint?: string; run: number };
+type Selection = { company: Company; domainHint?: string; run: number; resume?: LookupResume };
 
 const TABS: { id: Tab; label: string; icon: typeof SearchIcon }[] = [
   { id: "lookup", label: "Lookup", icon: SearchIcon },
@@ -22,13 +25,21 @@ export default function Home() {
   // The key lives only in React state: no localStorage, no cookies.
   const [apiKey, setApiKey] = useState<string | null>(null);
   const [keyError, setKeyError] = useState<string | null>(null);
+  // Which tenant the key belongs to, inferred from the API (see lib/tenant.ts). Tags History entries.
+  const [tenant, setTenant] = useState<Tenant | null>(null);
+  const keyLabel = tenant?.status === "known" ? tenant.name : "";
+  const currentKey = useRef<string | null>(null);
+  currentKey.current = apiKey;
   const [tab, setTab] = useState<Tab>("lookup");
   const [selection, setSelection] = useState<Selection | null>(null);
   const [resume, setResume] = useState<ResumeBatch | null>(null);
   const [session, setSession] = useState(0);
 
+  useEffect(() => setTitleLabel(apiKey ? keyLabel : ""), [apiKey, keyLabel]);
+
   function clearKey(error: string | null = null) {
     setApiKey(null);
+    setTenant(null);
     setSelection(null);
     setResume(null);
     setSession((s) => s + 1); // unmounts Lookup/Batch, which stops any polling
@@ -46,6 +57,11 @@ export default function Home() {
           <div className="key-status">
             <span className="key-pill">
               <KeyRound size={14} aria-hidden="true" /> Key in memory
+              <span className="key-label" title={tenant?.status === "unknown" ? tenant.reason : undefined}>
+                {tenant?.status === "known" && <>· {tenant.name}</>}
+                {tenant?.status === "detecting" && <>· identifying tenant…</>}
+                {tenant?.status === "unknown" && <>· tenant unknown</>}
+              </span>
             </span>
             <button className="btn btn-ghost small" onClick={() => clearKey()}>
               <X size={14} /> Clear key
@@ -69,6 +85,12 @@ export default function Home() {
             onSubmit={(k) => {
               setApiKey(k);
               setKeyError(null);
+              setTenant({ status: "detecting" });
+              // Runs alongside whatever the user does next; also rejects a bad key right away.
+              // Ignore the answer if the key was cleared or replaced in the meantime.
+              detectTenant(k)
+                .then((t) => currentKey.current === k && setTenant(t))
+                .catch((e: ApiError) => currentKey.current === k && clearKey(e.message));
             }}
           />
         )}
@@ -89,12 +111,14 @@ export default function Home() {
                   apiKey={apiKey}
                   company={selection.company}
                   domainHint={selection.domainHint}
+                  tenant={keyLabel || undefined}
+                  resume={selection.resume}
                   onKeyInvalid={clearKey}
                 />
               )}
             </div>
             <div className="stack" hidden={tab !== "batch"} key={`batch-${session}`}>
-              <Batch apiKey={apiKey} onKeyInvalid={clearKey} resume={resume} />
+              <Batch apiKey={apiKey} tenant={keyLabel || undefined} onKeyInvalid={clearKey} resume={resume} />
             </div>
           </>
         )}
@@ -102,12 +126,13 @@ export default function Home() {
         {tab === "history" && (
           <History
             hasKey={!!apiKey}
+            currentTenant={apiKey ? keyLabel : undefined}
             onResumeBatch={(b) => {
               setResume(b);
               setTab("batch");
             }}
-            onRerunLookup={(company, domainHint) => {
-              setSelection({ company, domainHint, run: Date.now() });
+            onRerunLookup={(company, domainHint, lookupResume) => {
+              setSelection({ company, domainHint, run: Date.now(), resume: lookupResume });
               setTab("lookup");
             }}
           />

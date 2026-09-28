@@ -329,3 +329,9 @@ a.person-name:hover { color: var(--accent-ink); text-decoration: underline; }
 .notify-opts .hint { flex-basis: 100%; margin: 0; }
 .notify-compact { border: 0; padding: 0; }
 .toggle input:disabled + svg { opacity: 0.4; }
+
+/* Tenant labels */
+.key-form { gap: 0; }
+.label-input { flex: 0 1 300px; min-width: 220px; }
+.key-label { font-weight: 700; color: var(--green-ink); margin-left: 2px; }
+.chip-active { border-color: var(--accent); background: var(--accent-tint); color: var(--accent-ink); font-weight: 700; }

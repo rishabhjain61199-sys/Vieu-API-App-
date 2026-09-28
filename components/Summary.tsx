@@ -42,6 +42,7 @@ export function Summary({
   elapsed,
   genMs,
   joined,
+  genApprox,
   analysis,
   onExport,
   onJumpPod,
@@ -58,6 +59,7 @@ export function Summary({
   elapsed?: string;
   genMs?: number | null;
   joined?: boolean;
+  genApprox?: boolean;
   analysis: Analysis | null;
   onExport?: () => void;
   onJumpPod?: (name: string) => void;
@@ -115,9 +117,18 @@ export function Summary({
         {outcome === "newly_generated" && genMs != null && (
           <div>
             <dt>Generation time</dt>
-            <dd title={joined ? "Measured from when this app found the seed already running" : undefined}>
+            <dd
+              title={
+                genApprox
+                  ? "At most this long. The tab was closed while it ran, so the exact finish time isn't known"
+                  : joined
+                    ? "Measured from when this app found the seed already running"
+                    : undefined
+              }
+            >
+              {genApprox && "≤ "}
               {formatDuration(genMs)}
-              {joined && <span className="muted small"> (watched)</span>}
+              {joined && !genApprox && <span className="muted small"> (watched)</span>}
             </dd>
           </div>
         )}
@@ -172,6 +183,7 @@ export function RecordView({ record, actions }: { record: RunRecord; actions?: R
         outcome={record.outcome}
         genMs={record.genMs}
         joined={record.joined}
+        genApprox={record.genApprox}
         analysis={analysis}
         checkedAt={record.checkedAt}
         onJumpPod={nav.jump}

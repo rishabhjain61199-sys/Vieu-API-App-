@@ -4,9 +4,10 @@ import type { BatchRecord, RunRecord } from "./types";
  * Past runs are kept in this browser's IndexedDB so people can come back to them.
  * Only results are stored, never the API key. Anyone can switch saving off or clear it.
  */
+type EntryBase = { id: string; title: string; createdAt: number; updatedAt: number; /** User's label for the key, never the key. */ tenant?: string };
 export type HistoryEntry =
-  | { id: string; kind: "lookup"; title: string; createdAt: number; updatedAt: number; data: RunRecord }
-  | { id: string; kind: "batch"; title: string; createdAt: number; updatedAt: number; data: BatchRecord };
+  | (EntryBase & { kind: "lookup"; data: RunRecord })
+  | (EntryBase & { kind: "batch"; data: BatchRecord });
 
 const DB_NAME = "stakeholder-lookup";
 const STORE = "entries";

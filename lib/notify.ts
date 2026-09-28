@@ -79,6 +79,13 @@ export function chime() {
 // ---- Tab title + favicon ---------------------------------------------------
 
 const generating = new Map<string, number>();
+let label = "";
+
+/** Prefix the tab title with the key's label so two tenants' tabs are easy to tell apart. */
+export function setTitleLabel(next?: string) {
+  label = next?.trim() ?? "";
+  render();
+}
 let done = false;
 let listening = false;
 
@@ -92,7 +99,8 @@ const ICON = (badge?: string) =>
 function render() {
   if (typeof document === "undefined") return;
   const total = [...generating.values()].reduce((a, b) => a + b, 0);
-  document.title = done ? `✓ Done · ${BASE_TITLE}` : total ? `(${total}) Generating · ${BASE_TITLE}` : BASE_TITLE;
+  const base = label ? `${label} · ${BASE_TITLE}` : BASE_TITLE;
+  document.title = done ? `✓ Done · ${base}` : total ? `(${total}) Generating · ${base}` : base;
   let link = document.querySelector<HTMLLinkElement>("link#app-icon");
   if (!link) {
     link = document.createElement("link");
