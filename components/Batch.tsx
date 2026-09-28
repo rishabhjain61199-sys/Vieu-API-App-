@@ -73,7 +73,7 @@ export function Batch({
   const ac = useRef(new AbortController());
   const fileRef = useRef<HTMLInputElement>(null);
 
-  const preview = useMemo(() => (text.trim() ? toBatchInputs(text) : null), [text]);
+  const preview = useMemo(() => (text.trim() ? toBatchInputs(text, "paste") : null), [text]);
 
   function patch(id: string, p: Partial<BatchRow>) {
     setRows((prev) => {
@@ -313,8 +313,8 @@ export function Batch({
     return (res.companies ?? []).slice(0, 5);
   }
 
-  function start(source: string, label: string) {
-    const { items, truncated } = toBatchInputs(source);
+  function start(source: string, label: string, kind: "paste" | "file" = "file") {
+    const { items, truncated } = toBatchInputs(source, kind);
     if (!items.length) {
       setImportError("No companies found. Use one per line, or a CSV with a name, domain or LinkedIn column.");
       return;
@@ -381,14 +381,14 @@ export function Batch({
           <p className="muted small">Columns like name, domain, website, linkedin_url, company_id, account_id are detected automatically.</p>
           <input ref={fileRef} type="file" accept=".csv,.tsv,.txt,text/csv" hidden onChange={(e) => onFile(e.target.files?.[0])} />
         </div>
-        <div className="or">or paste a list</div>
+        <div className="or">or paste a list, one per line or separated by commas</div>
         <textarea
           className="textarea"
           rows={6}
           value={text}
           onChange={(e) => setText(e.target.value)}
-          placeholder={"merck.com\nStripe\nhttps://www.linkedin.com/company/datadog\njane@snowflake.com"}
-          aria-label="Companies, one per line"
+          placeholder={"merck.com, Stripe, NVIDIA\nhttps://www.linkedin.com/company/datadog\njane@snowflake.com"}
+          aria-label="Companies, one per line or separated by commas"
         />
         {preview && (
           <p className="hint">
@@ -399,7 +399,7 @@ export function Batch({
         )}
         {importError && <p className="error-text">{importError}</p>}
         <div className="row gap wrap">
-          <button className="btn btn-primary" disabled={!preview?.items.length} onClick={() => start(text, "Pasted list")}>
+          <button className="btn btn-primary" disabled={!preview?.items.length} onClick={() => start(text, "Pasted list", "paste")}>
             <Upload size={16} /> Run batch
           </button>
           <button className="btn btn-ghost small" onClick={() => downloadFile("stakeholder_batch_template.csv", TEMPLATE_CSV)}>

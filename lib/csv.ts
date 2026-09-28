@@ -47,7 +47,46 @@ export const MAX_BATCH_ROWS = 250;
  * header, columns are mapped by name. Without one, every cell is sniffed
  * (domain, LinkedIn URL, id, email, else name).
  */
-export function toBatchInputs(text: string): { items: BatchInput[]; mapped: string[]; truncated: boolean } {
+// "Merck & Co., Inc." splits into "Merck & Co." + "Inc."; these get glued back on.
+const LEGAL_SUFFIX =
+  /^(inc|incorporated|llc|l\.l\.c|ltd|limited|corp|corporation|co|company|gmbh|plc|s\.?a|ag|kgaa|llp|lp|n\.?v|b\.?v|pty( ltd)?|oy|ab|a\/?s|s\.?p\.?a|s\.?r\.?l|sas|se)\.?$/i;
+
+function mergeSuffixes(cells: string[]) {
+  const out: string[] = [];
+  for (const c of cells) {
+    if (out.length && LEGAL_SUFFIX.test(c)) out[out.length - 1] = `${out[out.length - 1]}, ${c}`;
+    else out.push(c);
+  }
+  return out;
+}
+
+/** One company from a group of cells: the most precise identifier wins, names are kept for display. */
+function itemFromCells(cells: string[]): BatchInput | null {
+  const inputs: Partial<Record<SearchParam, string>> = {};
+  const names: string[] = [];
+  for (const cell of cells) {
+    const d = detectInput(cell);
+    if (!d) continue;
+    if (d.param === "query") names.push(cell);
+    else inputs[d.param] ??= d.value;
+  }
+  if (names.length) inputs.query = names.join(", ");
+  const primary = SEARCH_PARAMS.find((p) => inputs[p]);
+  return primary ? { label: inputs.query || inputs[primary]!, inputs } : null;
+}
+
+/**
+ * Turns an uploaded CSV or a pasted list into search inputs. With a recognised
+ * header, columns are mapped by name. Without one:
+ * - a file, or a tab-separated paste (from a spreadsheet): one row is one company;
+ * - a comma/semicolon paste on one line: every entry is its own company;
+ * - a comma paste over several lines: a line is one company when it holds at most
+ *   one of each kind ("Stripe, stripe.com"), otherwise each entry is its own company.
+ */
+export function toBatchInputs(
+  text: string,
+  source: "paste" | "file" = "file",
+): { items: BatchInput[]; mapped: string[]; truncated: boolean } {
   const rows = parseCsv(text);
   if (!rows.length) return { items: [], mapped: [], truncated: false };
 
@@ -57,38 +96,51 @@ export function toBatchInputs(text: string): { items: BatchInput[]; mapped: stri
   const mapped = hasHeader
     ? rows[0].flatMap((h, i) => (headerKeys[i] ? [`${h} → ${PARAM_LABEL[headerKeys[i]]}`] : []))
     : [];
+  const tabbed = /\t/.test(text.split(/\r?\n/, 1)[0] ?? "");
+  const listPaste = source === "paste" && !hasHeader && !tabbed;
+  const singleLine = body.length === 1;
 
-  const seen = new Set<string>();
-  const items: BatchInput[] = [];
+  const candidates: BatchInput[] = [];
   for (const r of body) {
-    const inputs: Partial<Record<SearchParam, string>> = {};
-    const names: string[] = [];
-    r.forEach((cell, i) => {
-      if (!cell) return;
-      if (hasHeader) {
+    if (hasHeader) {
+      const inputs: Partial<Record<SearchParam, string>> = {};
+      const names: string[] = [];
+      r.forEach((cell, i) => {
         const k = headerKeys[i];
-        if (!k) return;
+        if (!cell || !k) return;
         if (k === "query") names.push(cell);
         else {
           const d = detectInput(cell);
           // Keep the column's meaning, but normalise the value (e.g. strip https://www.).
           inputs[k] = d && d.param === k ? d.value : cell;
         }
-      } else {
-        const d = detectInput(cell);
-        if (!d) return;
-        if (d.param === "query") names.push(cell);
-        else inputs[d.param] ??= d.value;
-      }
-    });
-    if (names.length) inputs.query = names.join(", ");
-    const primary = SEARCH_PARAMS.find((p) => inputs[p]);
-    if (!primary) continue;
-    const dedupe = `${primary}:${inputs[primary]!.toLowerCase()}`;
-    if (seen.has(dedupe)) continue;
-    seen.add(dedupe);
-    items.push({ label: inputs.query || inputs[primary]!, inputs });
+      });
+      if (names.length) inputs.query = names.join(", ");
+      const primary = SEARCH_PARAMS.find((p) => inputs[p]);
+      if (primary) candidates.push({ label: inputs.query || inputs[primary]!, inputs });
+      continue;
+    }
+
+    const cells = listPaste
+      ? mergeSuffixes(r.flatMap((c) => c.split(";")).map((c) => c.trim()).filter(Boolean))
+      : r.filter(Boolean);
+    const kinds = cells.map((c) => detectInput(c)?.param).filter(Boolean);
+    const oneCompany = !listPaste || (!singleLine && new Set(kinds).size === kinds.length);
+    const groups = oneCompany ? [cells] : cells.map((c) => [c]);
+    for (const g of groups) {
+      const item = itemFromCells(g);
+      if (item) candidates.push(item);
+    }
   }
+
+  const seen = new Set<string>();
+  const items = candidates.filter((it) => {
+    const primary = SEARCH_PARAMS.find((p) => it.inputs[p])!;
+    const key = `${primary}:${it.inputs[primary]!.toLowerCase()}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
   return { items: items.slice(0, MAX_BATCH_ROWS), mapped, truncated: items.length > MAX_BATCH_ROWS };
 }
 
