@@ -30,7 +30,7 @@ import { MatchPicker, type CandidateDetails } from "./MatchPicker";
 // Lookups/checks in flight; the shared limiter in lib/api keeps the tenant under its rate limit.
 const CONCURRENCY = 8;
 /** Seeds running in Vieu at once (the API docs set no limit; kept modest and adjustable). */
-export const DEFAULT_MAX_SEEDS = 20;
+export const DEFAULT_MAX_SEEDS = 30;
 const SAVE_EVERY_MS = 1500;
 const WAKE_GAP_MS = 60_000; // a tick this late means the laptop slept
 const POLL_MS = 15_000; // per account, never faster

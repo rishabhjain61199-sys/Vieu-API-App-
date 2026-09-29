@@ -13,7 +13,7 @@ A small Next.js app. Paste a Vieu Partner API key (the key decides the tenant), 
 ## Large batches (up to 2,000 companies)
 
 - **Pace:** every call in the tab goes through one limiter at 25/s (1,500/min), half the tenant's 3,000/min limit. A 429 pauses all calls until `Retry-After` passes.
-- **Generation queue:** at most N seeds run at once (default 20, set in the Generate confirmation). The rest wait as "Queued to generate" and start as others finish. Each row's 12-minute watch starts when its own seed starts. The progress line shows running, queued and done, plus an estimate. **Stop queue** puts not-yet-started rows back.
+- **Generation queue:** at most N seeds run at once (default 30, set in the Generate confirmation). The rest wait as "Queued to generate" and start as others finish. Each row's 12-minute watch starts when its own seed starts. The progress line shows running, queued and done, plus an estimate. **Stop queue** puts not-yet-started rows back.
 - **Sleep:** if the laptop sleeps, running seeds keep going in Vieu and the queue pauses. On wake, rows are re-checked, and time asleep doesn't count toward the watch window. **Keep screen awake** (Wake Lock) stops the display sleeping while the tab is in front.
 - **Table:** 100 rows per page, with filters, sorting, and select-all across every page.
 
