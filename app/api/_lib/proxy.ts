@@ -13,6 +13,8 @@ type ProxyOptions = {
   oneOf?: string[];
   /** Extra params passed through when present (e.g. page, pageSize). */
   optional?: string[];
+  /** Upstream timeout; some Vieu endpoints (introductions) take ~50s. */
+  timeoutMs?: number;
 };
 
 function json(status: number, body: unknown, extra: Record<string, string> = {}) {
@@ -32,7 +34,7 @@ function scrub(text: string, key: string) {
  * The key arrives in the `x-vieu-key` header (never the URL, so it can't land in
  * access logs) and is never logged, stored, or included in any response.
  */
-export async function proxy(req: NextRequest, { path, method, oneOf = [], optional = [] }: ProxyOptions) {
+export async function proxy(req: NextRequest, { path, method, oneOf = [], optional = [], timeoutMs = TIMEOUT_MS }: ProxyOptions) {
   const key = req.headers.get("x-vieu-key")?.trim();
   if (!key) return json(401, { message: "No API key provided", reason: "TOKEN_MISSING" });
 
@@ -54,7 +56,7 @@ export async function proxy(req: NextRequest, { path, method, oneOf = [], option
       method,
       headers: { "x-api-key": key, accept: "application/json" },
       cache: "no-store",
-      signal: AbortSignal.timeout(TIMEOUT_MS),
+      signal: AbortSignal.timeout(timeoutMs),
     });
   } catch {
     // Deliberately drop the error object: it can carry request details.

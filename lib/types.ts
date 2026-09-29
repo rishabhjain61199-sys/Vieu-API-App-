@@ -131,6 +131,10 @@ export type BatchRow = {
   watchStart: number | null;
   joined: boolean;
   checkedAt: number | null;
+  /** Vieu has reported this seed as pending (it really started). */
+  started?: boolean;
+  /** Generate was re-sent once because Vieu never started it. */
+  resent?: boolean;
 };
 
 export type BatchRecord = { name: string; rows: BatchRow[] };

@@ -55,6 +55,8 @@ export function Run({
   const [genStart, setGenStart] = useState<number | null>(resume?.genStart ?? null);
   const [genEnd, setGenEnd] = useState<number | null>(null);
   const [joined, setJoined] = useState(resume?.joined ?? false);
+  // Vieu accepted the request but still reports "not_started" (its side, not ours).
+  const [waitingOnVieu, setWaitingOnVieu] = useState(false);
   // Re-opened from History while it was still generating: time is an upper bound.
   const [genApprox, setGenApprox] = useState(false);
   const [confirming, setConfirming] = useState(false);
@@ -122,6 +124,10 @@ export function Run({
     const signal = ac.current.signal;
     let windowStart = Date.now();
     let lastWake = Date.now();
+    const kickoff = Date.now();
+    let startedSeen = false;
+    let resent = false;
+    setWaitingOnVieu(false);
     setPhase("polling");
     setOutcome("seed_in_progress");
     try {
@@ -132,7 +138,20 @@ export function Run({
         if (late > 60_000) windowStart += late;
         lastWake = Date.now();
         try {
-          if (settle(await fetchStakeholders(), true)) return;
+          const r = await fetchStakeholders();
+          if (settle(r, true)) return;
+          if (r.seedingStatus === "pending") {
+            startedSeen = true;
+            setWaitingOnVieu(false);
+          } else if (!startedSeen && r.seedingStatus === "not_started") {
+            const idle = Date.now() - kickoff;
+            if (idle > 60_000) setWaitingOnVieu(true);
+            // Generate is idempotent: ask once more if Vieu never picked it up.
+            if (idle > 120_000 && !resent) {
+              resent = true;
+              await vieu(apiKey, "POST", "/accounts/stakeholders/generate", idParam(ids.current), opts()).catch(() => {});
+            }
+          }
         } catch (e) {
           if (isAbort(e)) throw e;
           const ae = e as ApiError;
@@ -322,7 +341,7 @@ export function Run({
         headquarters={profile?.headquarters}
         account={created ? "created" : noAccount ? "none" : phase === "loading" ? "loading" : "existing"}
         outcome={phase === "loading" ? null : outcome}
-        elapsed={phase === "polling" && genStart ? formatDuration(now - genStart) : undefined}
+        elapsed={phase === "polling" && genStart ? `${formatDuration(now - genStart)}${waitingOnVieu ? " · waiting for Vieu" : ""}` : undefined}
         genMs={genMs}
         joined={joined}
         genApprox={genApprox}
@@ -351,7 +370,13 @@ export function Run({
         <section className="card stage">
           <div className="row gap">
             <Spinner size={20} />
-            <h3>{joined ? "A seed was already running. Watching it now" : "Generating stakeholders"}</h3>
+            <h3>
+              {waitingOnVieu
+                ? "Waiting for Vieu to start the seed"
+                : joined
+                  ? "A seed was already running. Watching it now"
+                  : "Generating stakeholders"}
+            </h3>
           </div>
           <div className="progress" aria-hidden="true">
             <span style={{ width: `${Math.max(0, Math.min(100, ((now - genStart) / MAX_WAIT_MS) * 100))}%` }} />
@@ -363,6 +388,12 @@ export function Run({
             <span className="muted">Usually under 10 minutes. Checks every 15s, stops after 15 min.</span>
             {lastChecked && <span className="muted">Last checked {formatDuration(now - lastChecked)} ago.</span>}
           </p>
+          {waitingOnVieu && (
+            <p className="warn-text">
+              Vieu accepted the request but still reports the seed hasn&apos;t started. That&apos;s on Vieu&apos;s side, possibly a busy
+              queue. The app re-sends the request once after 2 minutes and keeps checking.
+            </p>
+          )}
           <NotifyOptions compact />
           <p className="note">You can leave this tab open and come back. Refreshing or closing it clears your key and stops the watch, but generation keeps running in Vieu.</p>
         </section>

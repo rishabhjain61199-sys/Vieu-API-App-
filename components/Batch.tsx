@@ -135,7 +135,7 @@ export function Batch({
       if (wasWatching && (r.seedingStatus === "completed" || r.generated)) patch(row.id, { ...base, stage: "completed", genEnd: now });
       else if (r.generated) patch(row.id, { ...base, stage: "seeded" });
       else if (r.seedingStatus === "pending")
-        patch(row.id, { ...base, stage: "polling", joined: wasWatching ? row.joined : true, genStart: row.genStart ?? now, watchStart: now });
+        patch(row.id, { ...base, stage: "polling", started: true, joined: wasWatching ? row.joined : true, genStart: row.genStart ?? now, watchStart: now });
       else if (r.seedingStatus === "failed") patch(row.id, { ...base, stage: "failed" });
       else patch(row.id, { ...base, stage: "not_started" });
       setNotice(null);
@@ -190,7 +190,7 @@ export function Batch({
         const now = Date.now();
         patch(row.id, {
           stage: "polling", created: row.created || !!g.created, accountId: g.accountId ?? row.accountId,
-          noAccount: false, joined: false, genStart: now, genEnd: null, watchStart: now, checkedAt: now,
+          noAccount: false, joined: false, genStart: now, genEnd: null, watchStart: now, checkedAt: now, started: false, resent: false,
         });
       } catch (e) {
         handleError(e, row.id);
@@ -234,7 +234,16 @@ export function Batch({
         if (r.seedingStatus === "completed" || (r.generated && r.seedingStatus !== "pending"))
           patch(row.id, { ...base, stage: "completed", genEnd: Date.now() });
         else if (r.seedingStatus === "failed") patch(row.id, { ...base, stage: "failed" });
-        else patch(row.id, { ...base, ...(timedOut() ? { stage: "timeout" as const } : {}) });
+        else {
+          const extra: Partial<BatchRow> = {};
+          if (r.seedingStatus === "pending") extra.started = true;
+          else if (r.seedingStatus === "not_started" && !row.started && !row.resent && Date.now() - (row.watchStart ?? 0) > 120_000) {
+            // Accepted but never started on Vieu's side: generate is idempotent, so ask once more.
+            extra.resent = true;
+            vieu(apiKey, "POST", "/accounts/stakeholders/generate", idParam({ accountId: row.accountId, companyId: row.company!.companyId }), opts()).catch(() => {});
+          }
+          patch(row.id, { ...base, ...extra, ...(timedOut() ? { stage: "timeout" as const } : {}) });
+        }
       } catch (e) {
         if (isAbort(e)) return;
         const ae = e as ApiError;
@@ -1142,10 +1151,16 @@ export function BatchView({
                       </td>
                       <td>
                         <span className="cell-status">
+                          {r.stage === "polling" && !r.started && r.watchStart && now - r.watchStart > 60_000 ? (
+                            <Badge tone="warn" title="Vieu accepted the request but reports the seed hasn't started yet">
+                              <Spinner size={12} /> Waiting for Vieu
+                            </Badge>
+                          ) : (
                           <Badge tone={badge.tone}>
                             {["resolving", "checking", "generating", "polling"].includes(r.stage) && <Spinner size={12} />}
                             {badge.label}
                           </Badge>
+                          )}
                           {r.stage === "polling" && r.genStart && <span className="muted small nowrap">{formatDuration(now - r.genStart)}</span>}
                           {r.stage === "completed" && r.genStart && r.genEnd && <span className="muted small nowrap">in {formatDuration(r.genEnd - r.genStart)}</span>}
                         </span>

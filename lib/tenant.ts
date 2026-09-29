@@ -15,7 +15,7 @@ type Intro = { pointOfContact?: { email?: string | null } | null };
  */
 export async function detectTenant(key: string, signal?: AbortSignal): Promise<Tenant> {
   try {
-    const r = await vieu<{ introductions?: Intro[] }>(key, "GET", "/introductions", { pageSize: "50" }, { signal });
+    const r = await vieu<{ introductions?: Intro[] }>(key, "GET", "/introductions", { pageSize: "25" }, { signal });
     const counts = new Map<string, number>();
     for (const intro of r.introductions ?? []) {
       const domain = intro.pointOfContact?.email?.split("@")[1]?.trim().toLowerCase();
