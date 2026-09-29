@@ -35,7 +35,7 @@ const SAVE_EVERY_MS = 1500;
 const WAKE_GAP_MS = 60_000; // a tick this late means the laptop slept
 const POLL_MS = 15_000; // per account, never faster
 const TICK_MS = 5_000;
-const MAX_WAIT_MS = 12 * 60_000;
+const MAX_WAIT_MS = 15 * 60_000;
 const WATCHING = new Set(["polling", "timeout", "generating", "gen_queued"]);
 const PAGE_ROWS = 100;
 const BUSY = new Set(["queued", "resolving", "checking"]);
@@ -209,7 +209,7 @@ export function Batch({
 
   async function tick() {
     const now = Date.now();
-    // Woke from sleep (lid closed): time asleep doesn't count toward the 12-minute watch,
+    // Woke from sleep (lid closed): time asleep doesn't count toward the 15-minute watch,
     // and anything that timed out meanwhile is checked again right away.
     const gap = now - lastTick.current;
     lastTick.current = now;

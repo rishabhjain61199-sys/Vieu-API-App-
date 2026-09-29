@@ -25,7 +25,7 @@ import { Summary, usePodNav } from "./Summary";
 import { NotifyOptions } from "./NotifyOptions";
 
 const POLL_MS = 15_000; // API asks for no more than one poll per 15s
-const MAX_WAIT_MS = 12 * 60_000;
+const MAX_WAIT_MS = 15 * 60_000;
 
 type Phase = "loading" | "results" | "not_started" | "polling" | "timeout" | "failed" | "error";
 
@@ -127,7 +127,7 @@ export function Run({
     try {
       while (true) {
         await sleep(POLL_MS, signal);
-        // Laptop slept: don't count the time asleep toward the 12-minute watch.
+        // Laptop slept: don't count the time asleep toward the 15-minute watch.
         const late = Date.now() - lastWake - POLL_MS;
         if (late > 60_000) windowStart += late;
         lastWake = Date.now();
@@ -271,7 +271,7 @@ export function Run({
     } else if (was === "polling" && phase === "failed") {
       announce({ tag: source, title: `Generation failed: ${company.name}`, body: "Open the app to retry." });
     } else if (was === "polling" && phase === "timeout") {
-      announce({ tag: source, title: `Still generating: ${company.name}`, body: "Not finished after 12 minutes. Open the app to check again." });
+      announce({ tag: source, title: `Still generating: ${company.name}`, body: "Not finished after 15 minutes. Open the app to check again." });
     }
     return () => setGenerating(source, 0);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -360,7 +360,7 @@ export function Run({
             <span className="kpi-inline">
               <Clock size={14} /> {formatDuration(now - genStart)} elapsed
             </span>
-            <span className="muted">Usually under 10 minutes. Checks every 15s, stops after 12 min.</span>
+            <span className="muted">Usually under 10 minutes. Checks every 15s, stops after 15 min.</span>
             {lastChecked && <span className="muted">Last checked {formatDuration(now - lastChecked)} ago.</span>}
           </p>
           <NotifyOptions compact />
@@ -371,7 +371,7 @@ export function Run({
       {phase === "timeout" && (
         <section className="card stage">
           <h3>Still generating</h3>
-          <p className="muted">It hasn&apos;t finished after 12 minutes. It is probably still running in Vieu.</p>
+          <p className="muted">It hasn&apos;t finished after 15 minutes. It is probably still running in Vieu.</p>
           <button className="btn btn-primary" onClick={checkAgain} disabled={busy}>
             {busy ? <Spinner /> : <RefreshCw size={16} />} Check again
           </button>
